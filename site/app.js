@@ -11,8 +11,8 @@
   const SCHEMA_VERSION = 3;
   const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}`;
   const CACHE_MAX_AGE = 1000 * 60 * 60 * 18; // 18 小時以上的快取直接丟棄
-  const SNAPSHOT_INTERVAL = 60_000;
-  const LIVE_INTERVAL = 30_000;
+  const SNAPSHOT_INTERVAL = 30_000; // 每 30 秒自動更新快照
+  const LIVE_INTERVAL = 20_000;     // 每 20 秒嘗試抓取即時報價
 
   const ORDER = {
     tw: ['TWII', '2330', '0050'],
@@ -39,11 +39,33 @@
   // Yahoo 有時回傳 USDTWD=X
   Y2KEY['USDTWD=X'] = 'USDTWD';
 
-  // 公開 CORS 代理（依序嘗試，記住可用者）
+  // 公開 CORS 代理（依序嘗試，支援包裝型與直通型）
   const PROXIES = [
-    (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-    (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`,
-    (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    {
+      name: 'allorigins',
+      build: (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+      unwrap: (d) => (d && typeof d.contents === 'string' ? JSON.parse(d.contents) : d),
+    },
+    {
+      name: 'corsproxy.org',
+      build: (u) => `https://corsproxy.org/?url=${encodeURIComponent(u)}`,
+      unwrap: (d) => d,
+    },
+    {
+      name: 'corseu',
+      build: (u) => `https://cors.eu.org/${u}`,
+      unwrap: (d) => d,
+    },
+    {
+      name: 'thingproxy',
+      build: (u) => `https://thingproxy.freeboard.io/fetch/${u}`,
+      unwrap: (d) => d,
+    },
+    {
+      name: 'codetabs',
+      build: (u) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`,
+      unwrap: (d) => d,
+    },
   ];
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -53,7 +75,7 @@
     liveAt: 0,
     liveOk: false,
     futLiveOk: false,
-    proxyIdx: Number(localStorage.getItem('stockdash:proxy') || 0) % PROXIES.length,
+    proxyIdx: 0,
     scheme: localStorage.getItem('stockdash:scheme') || 'tw',
     openKey: null,
     range: '1d',
@@ -62,6 +84,11 @@
 
   // ---------------- 工具 ----------------
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+  const num = (v) => {
+    if (v === null || v === undefined || v === '' || v === '-') return null;
+    const n = Number(String(v).replace(/,/g, ''));
+    return Number.isFinite(n) ? n : null;
+  };
   const decimalsFor = (key) => (key === 'USDTWD' ? 3 : key.startsWith('TXF') ? 0 : 2);
   const fmt = (v, d = 2) => (isNum(v) ? v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '—');
   const fmtVol = (v) => {
@@ -190,7 +217,7 @@
   }
 
   // ---------------- 網路 ----------------
-  async function fetchWithTimeout(url, opts = {}, ms = 9000) {
+  async function fetchWithTimeout(url, opts = {}, ms = 7000) {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), ms);
     try {
@@ -199,33 +226,73 @@
       clearTimeout(t);
     }
   }
+
   async function viaProxy(url, opts = {}, validate = () => true) {
     const n = PROXIES.length;
     for (let i = 0; i < n; i++) {
       const idx = (state.proxyIdx + i) % n;
+      const proxy = PROXIES[idx];
       try {
-        const res = await fetchWithTimeout(PROXIES[idx](url), { cache: 'no-store', ...opts });
-        if (!res.ok) throw new Error(res.status);
-        const j = await res.json();
-        if (!validate(j)) throw new Error('invalid');
+        const fullUrl = proxy.build(url);
+        const res = await fetchWithTimeout(fullUrl, { cache: 'no-store', ...opts }, 6000);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const raw = await res.json();
+        const j = proxy.unwrap(raw);
+        if (!validate(j)) throw new Error('validate failed');
         if (idx !== state.proxyIdx) {
           state.proxyIdx = idx;
-          localStorage.setItem('stockdash:proxy', idx);
+          try { localStorage.setItem('stockdash:proxy', idx); } catch {}
         }
         return j;
-      } catch {}
+      } catch (e) {
+        // 嘗試下一個代理
+      }
     }
     throw new Error('all proxies failed');
   }
 
   async function loadSnapshot() {
-    const res = await fetchWithTimeout(`data.json?t=${Date.now()}`, { cache: 'no-store' });
+    const res = await fetchWithTimeout(`data.json?t=${Date.now()}`, { cache: 'no-store' }, 8000);
     if (!res.ok) throw new Error('data.json ' + res.status);
     const j = await res.json();
     if (j.version !== SCHEMA_VERSION) throw new Error('schema mismatch');
+    const prevSnap = state.snapshotAt;
     state.snapshotAt = j.generatedAt;
     let changed = false;
     for (const q of Object.values(j.quotes || {})) changed = mergeQuote(q) || changed;
+    if (j.generatedAt !== prevSnap) changed = true;
+    return changed;
+  }
+
+  // 證交所 MIS 即時行情（加權指數、台積電、0050）
+  async function loadTwseLive() {
+    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|tse_2330.tw|tse_0050.tw&json=1&delay=0&_=${Date.now()}`;
+    const j = await viaProxy(url, {}, (x) => Array.isArray(x?.msgArray) && x.msgArray.length > 0);
+    let changed = false;
+    for (const it of j.msgArray) {
+      let key = null;
+      if (it.c === 't00') key = 'TWII';
+      else if (it.c === '2330') key = '2330';
+      else if (it.c === '0050') key = '0050';
+      if (!key) continue;
+      const price = num(it.z) || num(it.pz);
+      const prevClose = num(it.y);
+      if (!isNum(price) || !isNum(prevClose)) continue;
+      const time = num(it.tlong) || Date.now();
+      const nq = {
+        key,
+        price,
+        prevClose,
+        open: num(it.o),
+        high: num(it.h),
+        low: num(it.l),
+        volume: num(it.v),
+        time,
+        source: '證交所 MIS（即時）',
+        stale: false,
+      };
+      changed = mergeQuote(nq) || changed;
+    }
     return changed;
   }
 
@@ -263,35 +330,10 @@
       if (!key || !resp) continue;
       const q = parseYahooMeta(key, resp);
       if (q && q.time >= (state.quotes[key]?.time || 0)) {
-        // 證交所來源的較新報價不被較舊 Yahoo 覆蓋
         changed = mergeQuote({ ...q, stale: false }) || changed;
       }
     }
     return changed;
-  }
-
-  async function loadTaifexLive(marketType) {
-    const body = JSON.stringify({ MarketType: String(marketType), SymbolType: 'F', KindID: '1', CID: 'TXF', ExpireMonth: '', RowSize: '全部', PageNo: '', SortColumn: '', AscDesc: 'A' });
-    const j = await viaProxy('https://mis.taifex.com.tw/futures/api/getQuoteList', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }, (x) => Array.isArray(x?.RtData?.QuoteList));
-    const q = j.RtData.QuoteList.find((x) => /^TXF[A-Z]\d-[FM]$/.test(x.SymbolID));
-    if (!q) return false;
-    const n = (v) => (v === '' || v == null ? null : Number(v));
-    const night = marketType === 1;
-    const d = q.CDate;
-    let time = null;
-    if (d && q.CTime) {
-      const hh = +q.CTime.slice(0, 2);
-      time = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), hh - 8, +q.CTime.slice(2, 4), +q.CTime.slice(4, 6));
-      if (night && hh < 12) time += 86400000;
-    }
-    const price = n(q.CLastPrice);
-    const nq = {
-      key: night ? 'TXF_N' : 'TXF_D', name: META[night ? 'TXF_N' : 'TXF_D'].name, group: 'fut', symbol: q.SymbolID, contract: q.DispCName,
-      price, prevClose: n(q.CRefPrice), open: n(q.COpenPrice), high: n(q.CHighPrice), low: n(q.CLowPrice), volume: n(q.CTotalVolume),
-      sessionDate: d, time, source: '期交所 MIS（即時）', stale: false,
-      intraday: price != null && time ? [[time, price]] : [],
-    };
-    return mergeQuote(nq);
   }
 
   // ---------------- 渲染：卡片 ----------------
@@ -384,21 +426,23 @@
 
   function renderStatus() {
     const dot = $('#status-dot'), txt = $('#status-text');
-    const latest = Math.max(state.liveAt, state.snapshotAt);
-    if (state.liveOk || state.futLiveOk) {
+    const now = Date.now();
+    const liveFresh = state.liveAt && (now - state.liveAt < 90_000);
+    if (liveFresh && (state.liveOk || state.futLiveOk)) {
       dot.className = 'dot ok';
       txt.textContent = `即時連線 · ${new Date(state.liveAt).toLocaleTimeString('zh-TW', { hour12: false })}`;
     } else if (state.snapshotAt) {
-      dot.className = Date.now() - state.snapshotAt > 20 * 60_000 ? 'dot warn' : 'dot ok';
-      txt.textContent = `雲端快照 · ${ago(state.snapshotAt)}`;
-    } else if (latest === 0 && Object.keys(state.quotes).length) {
+      const ageMs = now - state.snapshotAt;
+      dot.className = ageMs > 15 * 60_000 ? 'dot warn' : 'dot ok';
+      txt.textContent = `定時快照 · ${ago(state.snapshotAt)}`;
+    } else if (Object.keys(state.quotes).length) {
       dot.className = 'dot warn';
       txt.textContent = '顯示快取資料';
     } else {
       dot.className = 'dot';
       txt.textContent = '載入中…';
     }
-    $('#foot-meta').textContent = state.snapshotAt ? `雲端快照產生時間：${timeStr(state.snapshotAt)}（台北）` : '';
+    $('#foot-meta').textContent = state.snapshotAt ? `雲端快照產生時間：${timeStr(state.snapshotAt)}（台北）· 行情自動每分鐘更新` : '';
   }
 
   function renderAll() {
@@ -669,25 +713,25 @@
   let busy = false;
   async function refreshLive() {
     const tasks = [
-      loadYahooLive().then((c) => { state.liveOk = true; return c; }).catch(() => { state.liveOk = false; return false; }),
-      Promise.allSettled([loadTaifexLive(0), loadTaifexLive(1)]).then((rs) => {
-        state.futLiveOk = rs.some((r) => r.status === 'fulfilled');
-        return rs.some((r) => r.value);
-      }),
+      loadTwseLive().then((c) => { state.liveOk = true; return c; }).catch(() => false),
+      loadYahooLive().then((c) => { state.liveOk = true; return c; }).catch(() => false),
     ];
     const res = await Promise.all(tasks);
-    if (state.liveOk || state.futLiveOk) state.liveAt = Date.now();
-    return res.some(Boolean);
+    const anyOk = res.some(Boolean);
+    if (state.liveOk) state.liveAt = Date.now();
+    return anyOk;
   }
+
   async function refreshAll(manual = false) {
     if (busy) return;
     busy = true;
     const btn = $('#btn-refresh');
     btn.classList.add('spin');
     try {
-      await loadSnapshot().catch((e) => console.warn('snapshot', e));
-      renderAll();
-      await refreshLive();
+      await Promise.allSettled([
+        loadSnapshot().catch((e) => console.warn('snapshot', e)),
+        refreshLive().catch((e) => console.warn('live', e)),
+      ]);
       renderAll();
     } finally {
       busy = false;
@@ -706,6 +750,6 @@
   refreshAll();
   setInterval(() => !document.hidden && loadSnapshot().then(renderAll).catch(() => {}), SNAPSHOT_INTERVAL);
   setInterval(() => !document.hidden && !busy && refreshLive().then(renderAll), LIVE_INTERVAL);
-  setInterval(renderStatus, 15_000);
+  setInterval(renderStatus, 5_000); // 每 5 秒平滑更新「X 秒前 / X 分鐘前」狀態
   document.addEventListener('visibilitychange', () => !document.hidden && refreshAll());
 })();
