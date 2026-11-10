@@ -4,22 +4,19 @@ on:
   push:
     branches: [main]
   schedule:
-    # 錯開設置 5 組排程，達到每分鐘排程觸發的效果
+    # 5 分鐘排程作為保底自動恢復
     - cron: '*/5 * * * *'
-    - cron: '1,6,11,16,21,26,31,36,41,46,51,56 * * * *'
-    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
-    - cron: '3,8,13,18,23,28,33,38,43,48,53,58 * * * *'
-    - cron: '4,9,14,19,24,29,34,39,44,49,54,59 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -42,3 +39,12 @@ jobs:
           path: site
       - id: deployment
         uses: actions/deploy-pages@v4
+      - name: Retrigger next run for 1-minute live cycle
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Waiting 30 seconds before scheduling next 1-minute update run..."
+          sleep 30
+          gh workflow run deploy.yml --ref main || true
+

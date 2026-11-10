@@ -11,8 +11,8 @@
   const SCHEMA_VERSION = 3;
   const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}`;
   const CACHE_MAX_AGE = 1000 * 60 * 60 * 18; // 18 小時以上的快取直接丟棄
-  const SNAPSHOT_INTERVAL = 30_000; // 每 30 秒自動更新快照
-  const LIVE_INTERVAL = 20_000;     // 每 20 秒嘗試抓取即時報價
+  const SNAPSHOT_INTERVAL = 12_000; // 每 12 秒自動抓取雲端快照
+  const LIVE_INTERVAL = 15_000;     // 每 15 秒嘗試抓取即時報價
 
   const ORDER = {
     tw: ['TWII', '2330', '0050'],
@@ -399,7 +399,11 @@
         if (q && isNum(q.price) && isNum(lastPrices[key]) && q.price !== lastPrices[key]) {
           const cls = q.price > lastPrices[key] ? 'flash-up' : 'flash-down';
           const p = el.querySelector('.price');
-          p.classList.add(cls);
+          if (p) {
+            p.classList.remove('flash-up', 'flash-down');
+            void p.offsetWidth;
+            p.classList.add(cls);
+          }
         }
         if (q) lastPrices[key] = q.price;
       }
@@ -427,14 +431,15 @@
   function renderStatus() {
     const dot = $('#status-dot'), txt = $('#status-text');
     const now = Date.now();
-    const liveFresh = state.liveAt && (now - state.liveAt < 90_000);
+    const liveFresh = state.liveAt && (now - state.liveAt < 45_000);
     if (liveFresh && (state.liveOk || state.futLiveOk)) {
       dot.className = 'dot ok';
       txt.textContent = `即時連線 · ${new Date(state.liveAt).toLocaleTimeString('zh-TW', { hour12: false })}`;
     } else if (state.snapshotAt) {
-      const ageMs = now - state.snapshotAt;
-      dot.className = ageMs > 15 * 60_000 ? 'dot warn' : 'dot ok';
-      txt.textContent = `定時快照 · ${ago(state.snapshotAt)}`;
+      const ageSec = Math.max(0, Math.round((now - state.snapshotAt) / 1000));
+      const ageText = ageSec < 60 ? `${ageSec} 秒前` : `${Math.round(ageSec / 60)} 分鐘前`;
+      dot.className = ageSec > 180 ? 'dot warn' : 'dot ok';
+      txt.textContent = `自動同步中 · ${ageText}`;
     } else if (Object.keys(state.quotes).length) {
       dot.className = 'dot warn';
       txt.textContent = '顯示快取資料';
@@ -442,7 +447,7 @@
       dot.className = 'dot';
       txt.textContent = '載入中…';
     }
-    $('#foot-meta').textContent = state.snapshotAt ? `雲端快照產生時間：${timeStr(state.snapshotAt)}（台北）· 行情自動每分鐘更新` : '';
+    $('#foot-meta').textContent = state.snapshotAt ? `雲端快照產生時間：${timeStr(state.snapshotAt)}（台北）· 行情每分鐘自動更新` : '';
   }
 
   function renderAll() {
@@ -750,6 +755,6 @@
   refreshAll();
   setInterval(() => !document.hidden && loadSnapshot().then(renderAll).catch(() => {}), SNAPSHOT_INTERVAL);
   setInterval(() => !document.hidden && !busy && refreshLive().then(renderAll), LIVE_INTERVAL);
-  setInterval(renderStatus, 5_000); // 每 5 秒平滑更新「X 秒前 / X 分鐘前」狀態
+  setInterval(renderStatus, 1_000); // 每 1 秒即時推進「X 秒前」計時，動態可見
   document.addEventListener('visibilitychange', () => !document.hidden && refreshAll());
 })();
