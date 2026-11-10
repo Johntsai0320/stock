@@ -39,12 +39,13 @@ jobs:
           path: site
       - id: deployment
         uses: actions/deploy-pages@v4
-      - name: Retrigger next run for 1-minute live cycle
+      - name: Retrigger next run for high-frequency live cycle
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Waiting 30 seconds before scheduling next 1-minute update run..."
-          sleep 30
+          echo "Waiting 15 seconds before scheduling next high-frequency update run..."
+          sleep 15
           gh workflow run deploy.yml --ref main || true
+
 

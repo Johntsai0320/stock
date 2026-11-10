@@ -11,7 +11,7 @@
   const SCHEMA_VERSION = 3;
   const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}`;
   const CACHE_MAX_AGE = 1000 * 60 * 60 * 18; // 18 小時以上的快取直接丟棄
-  const SNAPSHOT_INTERVAL = 12_000; // 每 12 秒自動抓取雲端快照
+  const SNAPSHOT_INTERVAL = 8_000;  // 每 8 秒自動抓取雲端快照（極速同步）
   const LIVE_INTERVAL = 15_000;     // 每 15 秒嘗試抓取即時報價
 
   const ORDER = {
@@ -254,7 +254,13 @@
   }
 
   async function loadSnapshot() {
-    const res = await fetchWithTimeout(`data.json?t=${Date.now()}`, { cache: 'no-store' }, 8000);
+    const res = await fetchWithTimeout(`data.json?t=${Date.now()}&_r=${Math.random().toString(36).slice(2)}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
+    }, 8000);
     if (!res.ok) throw new Error('data.json ' + res.status);
     const j = await res.json();
     if (j.version !== SCHEMA_VERSION) throw new Error('schema mismatch');
@@ -265,6 +271,7 @@
     if (j.generatedAt !== prevSnap) changed = true;
     return changed;
   }
+
 
   function extractTwsePrice(it) {
     const z = num(it.z);
