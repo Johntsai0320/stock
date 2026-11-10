@@ -196,7 +196,8 @@
       state.quotes[nq.key] = { ...nq };
       return true;
     }
-    const newer = (nq.time || 0) >= (old.time || 0);
+    const isTwseOverridingYahoo = Boolean(nq.source?.includes('證交所') && old.source?.includes('Yahoo'));
+    const newer = (nq.time || 0) >= (old.time || 0) || isTwseOverridingYahoo;
     // 基準價跨日校正：若新資料時間較新且基準不同，以新資料為準（交易日已切換）
     if (!newer && !fromCache) {
       if (nq.daily?.length > (old.daily?.length || 0)) old.daily = nq.daily;
@@ -215,6 +216,7 @@
     state.quotes[nq.key] = merged;
     return true;
   }
+
 
   // ---------------- 網路 ----------------
   async function fetchWithTimeout(url, opts = {}, ms = 7000) {
@@ -264,6 +266,19 @@
     return changed;
   }
 
+  function extractTwsePrice(it) {
+    const z = num(it.z);
+    if (isNum(z)) return z;
+    const tz = num(it.trade?.z);
+    if (isNum(tz)) return tz;
+    const pz = num(it.pz);
+    if (isNum(pz)) return pz;
+    const b1 = num(it.b?.split('_')?.[0]);
+    const a1 = num(it.a?.split('_')?.[0]);
+    if (isNum(b1) && isNum(a1)) return (b1 + a1) / 2;
+    return isNum(b1) ? b1 : isNum(a1) ? a1 : null;
+  }
+
   // 證交所 MIS 即時行情（加權指數、台積電、0050）
   async function loadTwseLive() {
     const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|tse_2330.tw|tse_0050.tw&json=1&delay=0&_=${Date.now()}`;
@@ -275,7 +290,7 @@
       else if (it.c === '2330') key = '2330';
       else if (it.c === '0050') key = '0050';
       if (!key) continue;
-      const price = num(it.z) || num(it.pz);
+      const price = extractTwsePrice(it);
       const prevClose = num(it.y);
       if (!isNum(price) || !isNum(prevClose)) continue;
       const time = num(it.tlong) || Date.now();
@@ -295,6 +310,7 @@
     }
     return changed;
   }
+
 
   function parseYahooMeta(key, resp) {
     const m = resp.meta || {};

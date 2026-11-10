@@ -123,6 +123,19 @@ async function fetchYahoo(def) {
 }
 
 // ---------- TWSE MIS（海外 IP 可能被擋，失敗即略過，以 Yahoo 為準）----------
+function extractTwsePrice(it) {
+  const z = num(it.z);
+  if (z != null) return z;
+  const tz = num(it.trade?.z);
+  if (tz != null) return tz;
+  const pz = num(it.pz);
+  if (pz != null) return pz;
+  const b1 = num(it.b?.split('_')?.[0]);
+  const a1 = num(it.a?.split('_')?.[0]);
+  if (b1 != null && a1 != null) return (b1 + a1) / 2;
+  return b1 ?? a1 ?? null;
+}
+
 async function fetchTwseMis() {
   const chs = SYMBOLS.filter((s) => s.mis).map((s) => s.mis).join('|');
   const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${encodeURIComponent(chs)}&json=1&delay=0&_=${Date.now()}`;
@@ -131,13 +144,15 @@ async function fetchTwseMis() {
   for (const it of j.msgArray || []) {
     const key = SYMBOLS.find((s) => s.mis && s.mis.startsWith(`${it.ex}_${it.c}.`))?.key;
     if (!key) continue;
+    const price = extractTwsePrice(it);
     out[key] = {
-      price: num(it.z),
+      price,
       prevClose: num(it.y),
       open: num(it.o),
       high: num(it.h),
       low: num(it.l),
-      time: num(it.tlong),
+      volume: num(it.v),
+      time: num(it.tlong) || Date.now(),
     };
   }
   return out;
@@ -224,15 +239,30 @@ async function main() {
     }
   });
 
-  // 證交所 MIS 覆寫（較即時），昨收以證交所為準
+  // 證交所 MIS 覆寫（即時真實報價），優先於延遲的 Yahoo
   try {
     const mis = await fetchTwseMis();
     for (const [k, v] of Object.entries(mis)) {
       const q = quotes[k];
       if (!q) continue;
       if (v.prevClose != null) q.prevClose = v.prevClose;
-      if (v.price != null && (v.time ?? 0) >= (q.time ?? 0)) {
-        Object.assign(q, { price: v.price, open: v.open ?? q.open, high: v.high ?? q.high, low: v.low ?? q.low, time: v.time, source: '證交所 MIS' });
+      if (v.price != null) {
+        q.price = v.price;
+        if (v.open != null) q.open = v.open;
+        if (v.high != null) q.high = Math.max(q.high ?? -Infinity, v.high, v.price);
+        if (v.low != null) q.low = Math.min(q.low ?? Infinity, v.low, v.price);
+        if (v.volume != null) q.volume = v.volume;
+        if (v.time != null) q.time = v.time;
+        q.source = '證交所 MIS';
+        q.stale = false;
+        if (Array.isArray(q.intraday)) {
+          const lastPt = q.intraday[q.intraday.length - 1];
+          if (!lastPt || lastPt[0] < v.time) {
+            q.intraday.push([v.time, v.price]);
+          } else if (lastPt && lastPt[0] === v.time) {
+            lastPt[1] = v.price;
+          }
+        }
       }
     }
   } catch (e) {
