@@ -196,12 +196,18 @@
       state.quotes[nq.key] = { ...nq };
       return true;
     }
+    const isSessionSwitched = Boolean(nq.sessionDate && old.sessionDate && nq.sessionDate !== old.sessionDate);
     const isTwseOverridingYahoo = Boolean(nq.source?.includes('證交所') && old.source?.includes('Yahoo'));
-    const newer = (nq.time || 0) >= (old.time || 0) || isTwseOverridingYahoo;
+    const newer = (nq.time || 0) >= (old.time || 0) || isTwseOverridingYahoo || isSessionSwitched;
     // 基準價跨日校正：若新資料時間較新且基準不同，以新資料為準（交易日已切換）
     if (!newer && !fromCache) {
       if (nq.daily?.length > (old.daily?.length || 0)) old.daily = nq.daily;
       return false;
+    }
+    if (isSessionSwitched) {
+      // 交易日切換（如 15:00 夜盤開盤），以新開盤價、新基準價與新走勢完全替換舊時段
+      state.quotes[nq.key] = { ...nq };
+      return true;
     }
     const merged = { ...old, ...nq };
     for (const f of ['daily', 'intraday']) {
@@ -216,6 +222,7 @@
     state.quotes[nq.key] = merged;
     return true;
   }
+
 
 
   // ---------------- 網路 ----------------

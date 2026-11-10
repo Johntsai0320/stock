@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
   actions: write
@@ -33,7 +33,15 @@ jobs:
         env:
           SITE_URL: https://johntsai0320.github.io/stock/
         run: node scripts/fetch-data.mjs
+      - name: Commit updated data.json to force CDN cache purge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add site/data.json
+          git commit -m "Auto update market data [skip ci]" || echo "No changes to data.json"
+          git push origin main || true
       - uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
