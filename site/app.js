@@ -589,13 +589,13 @@
         autoSize: true,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#8b93a1', fontFamily: 'Inter, sans-serif', fontSize: 11 },
         grid: { vertLines: { visible: false }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
-        rightPriceScale: { borderVisible: false },
+        rightPriceScale: { borderVisible: false, minimumWidth: 78 },
         timeScale: { borderVisible: false, timeVisible: s.kind === 'line', secondsVisible: false },
         crosshair: { mode: 0 },
         handleScroll: { vertTouchDrag: false },
       };
       const main = LWC.createChart(mainEl, base);
-      const rsiC = LWC.createChart(rsiEl, { ...base, rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.1, bottom: 0.1 } } });
+      const rsiC = LWC.createChart(rsiEl, { ...base, rightPriceScale: { borderVisible: false, minimumWidth: 78, scaleMargins: { top: 0.1, bottom: 0.1 } } });
       let price;
       if (s.kind === 'line') {
         price = main.addAreaSeries({ lineColor, topColor: lineColor + '55', bottomColor: lineColor + '00', lineWidth: 2, priceLineVisible: false });
