@@ -1,0 +1,40 @@
+name: Fetch data & Deploy Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 每 5 分鐘抓一次真實行情（GitHub 排程可能延遲數分鐘）
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Fetch market data
+        env:
+          SITE_URL: https://johntsai0320.github.io/stock/
+        run: node scripts/fetch-data.mjs
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>台美股即時看盤｜台積電・0050・台指期・美股四大指數</title>
+  <meta name="description" content="純前端手機優先看盤儀表板：台積電、0050、加權指數、台指期日夜盤、美股四大指數、TSM ADR 折溢價、VT、QQQM，含 20MA 與 RSI 技術指標。" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=3" />
+  <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
+</head>
+<body class="scheme-tw">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <h1>看盤儀表板</h1>
+        <p id="status-line" class="status-line"><span id="status-dot" class="dot"></span><span id="status-text">載入中…</span></p>
+      </div>
+      <div class="actions">
+        <button id="btn-scheme" class="chip-btn" type="button" aria-label="切換漲跌配色" title="切換漲跌配色">
+          <span class="sw sw-up"></span><span class="sw sw-down"></span><span id="scheme-label">台股配色</span>
+        </button>
+        <button id="btn-refresh" class="icon-btn" type="button" aria-label="重新整理" title="重新整理">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="highlight" aria-label="ADR 折溢價與匯率">
+      <article id="adr-card" class="hl-card">
+        <div class="hl-label">台積電 ADR 折溢價</div>
+        <div id="adr-value" class="hl-value">—</div>
+        <div id="adr-detail" class="hl-detail">TSM × 匯率 ÷ (2330 × 5)</div>
+      </article>
+      <article id="fx-card" class="hl-card" data-key="USDTWD" tabindex="0">
+        <div class="hl-label">美元 / 台幣</div>
+        <div id="fx-value" class="hl-value">—</div>
+        <div id="fx-detail" class="hl-detail">—</div>
+      </article>
+    </section>
+
+    <section class="group" aria-labelledby="g-tw">
+      <h2 id="g-tw" class="group-title">台股現貨</h2>
+      <div class="grid" id="grid-tw"></div>
+    </section>
+
+    <section class="group" aria-labelledby="g-fut">
+      <h2 id="g-fut" class="group-title">台灣期貨 <small>近月台指期</small></h2>
+      <div class="grid" id="grid-fut"></div>
+    </section>
+
+    <section class="group" aria-labelledby="g-usidx">
+      <h2 id="g-usidx" class="group-title">美股四大指數</h2>
+      <div class="grid" id="grid-usidx"></div>
+    </section>
+
+    <section class="group" aria-labelledby="g-us">
+      <h2 id="g-us" class="group-title">美股 ADR / ETF</h2>
+      <div class="grid" id="grid-us"></div>
+    </section>
+
+    <footer class="foot">
+      <p>資料來源：Yahoo Finance、臺灣證券交易所 MIS、臺灣期貨交易所 MIS。報價可能延遲，僅供參考，不構成投資建議。</p>
+      <p id="foot-meta"></p>
+    </footer>
+  </main>
+
+  <!-- 詳細走勢 Bottom Sheet -->
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <div>
+        <h3 id="sheet-title">—</h3>
+        <p id="sheet-sub" class="muted">—</p>
+      </div>
+      <button id="sheet-close" class="icon-btn" type="button" aria-label="關閉">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet-price">
+      <span id="sheet-price" class="big">—</span>
+      <span id="sheet-chg" class="chg">—</span>
+    </div>
+    <div class="tabs" role="tablist" id="sheet-tabs">
+      <button role="tab" class="tab" data-range="1d" id="tab-1d">當日</button>
+      <button role="tab" class="tab" data-range="3m" id="tab-3m">3月</button>
+      <button role="tab" class="tab" data-range="6m" id="tab-6m">6月</button>
+      <button role="tab" class="tab" data-range="1y" id="tab-1y">1年</button>
+    </div>
+    <div class="legend" id="sheet-legend"></div>
+    <div id="chart-main" class="chart-main"></div>
+    <div class="rsi-head"><span>RSI(14)</span><span id="rsi-val" class="muted">—</span></div>
+    <div id="chart-rsi" class="chart-rsi"></div>
+    <dl id="sheet-stats" class="stats"></dl>
+  </section>
+
+  <script src="app.js?v=3" defer></script>
+</body>
+</html>

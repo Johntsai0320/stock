@@ -1,0 +1,273 @@
+// 由 GitHub Actions 執行：抓取真實市場數據並輸出 site/data.json
+// 資料來源：Yahoo Finance (chart / spark)、期交所 MIS、證交所 MIS（若可連線）
+// Node 20+（內建 fetch）
+
+import { writeFile, mkdir } from 'node:fs/promises';
+
+const SCHEMA_VERSION = 3;
+const SITE_URL = process.env.SITE_URL || 'https://johntsai0320.github.io/stock/';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
+
+// key, Yahoo symbol, 顯示名稱, 分組, TWSE MIS 代碼
+export const SYMBOLS = [
+  { key: 'TWII', y: '^TWII', name: '台灣加權指數', group: 'tw', mis: 'tse_t00.tw' },
+  { key: '2330', y: '2330.TW', name: '台積電', group: 'tw', mis: 'tse_2330.tw' },
+  { key: '0050', y: '0050.TW', name: '元大台灣50', group: 'tw', mis: 'tse_0050.tw' },
+  { key: 'DJI', y: '^DJI', name: '道瓊工業', group: 'usidx' },
+  { key: 'GSPC', y: '^GSPC', name: 'S&P 500', group: 'usidx' },
+  { key: 'IXIC', y: '^IXIC', name: '那斯達克', group: 'usidx' },
+  { key: 'SOX', y: '^SOX', name: '費城半導體', group: 'usidx' },
+  { key: 'TSM', y: 'TSM', name: '台積電 ADR', group: 'us' },
+  { key: 'VT', y: 'VT', name: 'Vanguard 全世界股票', group: 'us' },
+  { key: 'QQQM', y: 'QQQM', name: 'Invesco 那斯達克100', group: 'us' },
+  { key: 'USDTWD', y: 'TWD=X', name: '美元/台幣', group: 'fx' },
+];
+
+const num = (v) => {
+  if (v === null || v === undefined || v === '' || v === '-') return null;
+  const n = Number(String(v).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+};
+
+async function fetchJSON(url, opts = {}, tries = 3) {
+  let err;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, {
+        ...opts,
+        headers: { 'User-Agent': UA, Accept: 'application/json,text/plain,*/*', ...(opts.headers || {}) },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${url}`);
+      return await res.json();
+    } catch (e) {
+      err = e;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1)));
+    }
+  }
+  throw err;
+}
+
+// ---------- Yahoo ----------
+async function yahooChart(symbol, range, interval) {
+  const hosts = ['query1', 'query2'];
+  let lastErr;
+  for (const h of hosts) {
+    try {
+      const url = `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
+      const j = await fetchJSON(url);
+      const r = j?.chart?.result?.[0];
+      if (!r) throw new Error('empty chart ' + symbol);
+      return r;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
+function parseIntraday(r) {
+  const ts = r.timestamp || [];
+  const c = r.indicators?.quote?.[0]?.close || [];
+  const out = [];
+  for (let i = 0; i < ts.length; i++) if (c[i] != null) out.push([ts[i] * 1000, +c[i].toFixed(4)]);
+  return out;
+}
+
+function parseDaily(r) {
+  const ts = r.timestamp || [];
+  const q = r.indicators?.quote?.[0] || {};
+  const out = [];
+  for (let i = 0; i < ts.length; i++) {
+    if ([q.open?.[i], q.high?.[i], q.low?.[i], q.close?.[i]].some((v) => v == null)) continue;
+    out.push([ts[i] * 1000, +q.open[i].toFixed(4), +q.high[i].toFixed(4), +q.low[i].toFixed(4), +q.close[i].toFixed(4), q.volume?.[i] ?? 0]);
+  }
+  return out;
+}
+
+async function fetchYahoo(def) {
+  const [intra, daily] = await Promise.all([
+    yahooChart(def.y, '1d', '5m'),
+    yahooChart(def.y, '1y', '1d').catch(() => null),
+  ]);
+  const m = intra.meta;
+  // 昨收：range=1d 時 previousClose / chartPreviousClose 皆為「前一交易日收盤」
+  // （注意：長區間的 chartPreviousClose 是區間起點前的收盤，不可拿來當昨收）
+  const prevClose = num(m.previousClose) ?? num(m.chartPreviousClose);
+  const intraday = parseIntraday(intra);
+  const quotes = intra.indicators?.quote?.[0] || {};
+  const highs = (quotes.high || []).filter((v) => v != null);
+  const lows = (quotes.low || []).filter((v) => v != null);
+  const opens = (quotes.open || []).filter((v) => v != null);
+  return {
+    key: def.key,
+    name: def.name,
+    symbol: def.y,
+    group: def.group,
+    currency: m.currency,
+    price: num(m.regularMarketPrice),
+    prevClose,
+    open: opens[0] ?? null,
+    high: num(m.regularMarketDayHigh) ?? (highs.length ? Math.max(...highs) : null),
+    low: num(m.regularMarketDayLow) ?? (lows.length ? Math.min(...lows) : null),
+    volume: num(m.regularMarketVolume),
+    time: (m.regularMarketTime || 0) * 1000,
+    session: m.currentTradingPeriod?.regular
+      ? { start: m.currentTradingPeriod.regular.start * 1000, end: m.currentTradingPeriod.regular.end * 1000 }
+      : null,
+    tz: m.exchangeTimezoneName,
+    source: 'Yahoo Finance',
+    intraday,
+    daily: daily ? parseDaily(daily) : [],
+  };
+}
+
+// ---------- TWSE MIS（海外 IP 可能被擋，失敗即略過，以 Yahoo 為準）----------
+async function fetchTwseMis() {
+  const chs = SYMBOLS.filter((s) => s.mis).map((s) => s.mis).join('|');
+  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${encodeURIComponent(chs)}&json=1&delay=0&_=${Date.now()}`;
+  const j = await fetchJSON(url, { headers: { Referer: 'https://mis.twse.com.tw/stock/index.jsp' } }, 1);
+  const out = {};
+  for (const it of j.msgArray || []) {
+    const key = SYMBOLS.find((s) => s.mis && s.mis.startsWith(`${it.ex}_${it.c}.`))?.key;
+    if (!key) continue;
+    out[key] = {
+      price: num(it.z),
+      prevClose: num(it.y),
+      open: num(it.o),
+      high: num(it.h),
+      low: num(it.l),
+      time: num(it.tlong),
+    };
+  }
+  return out;
+}
+
+// ---------- TAIFEX MIS 台指期 ----------
+async function fetchTaifex(marketType) {
+  const body = {
+    MarketType: String(marketType), // 0 = 一般(日盤), 1 = 盤後(夜盤)
+    SymbolType: 'F',
+    KindID: '1',
+    CID: 'TXF',
+    ExpireMonth: '',
+    RowSize: '全部',
+    PageNo: '',
+    SortColumn: '',
+    AscDesc: 'A',
+  };
+  const j = await fetchJSON('https://mis.taifex.com.tw/futures/api/getQuoteList', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Referer: 'https://mis.taifex.com.tw/futures/' },
+    body: JSON.stringify(body),
+  });
+  const list = j?.RtData?.QuoteList || [];
+  // 近月合約：第一個 TXF??-F / -M（排除現貨列 TXF-S / TXF-P）
+  const q = list.find((x) => /^TXF[A-Z]\d-[FM]$/.test(x.SymbolID));
+  if (!q) throw new Error('TAIFEX: near-month contract not found');
+  const night = marketType === 1;
+  const ref = num(q.CRefPrice); // 日盤 = 昨日結算價；夜盤 = 當日日盤結算價（期交所提供）
+  const last = num(q.CLastPrice);
+  const d = q.CDate; // 交易時段起始日
+  let time = null;
+  if (d && q.CTime) {
+    const hh = +q.CTime.slice(0, 2), mm = +q.CTime.slice(2, 4), ss = +q.CTime.slice(4, 6);
+    // 以台北時間 (UTC+8) 建立時間戳；夜盤跨日（00:00~05:00）需 +1 天
+    time = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), hh - 8, mm, ss);
+    if (night && hh < 12) time += 86400000;
+  }
+  return {
+    key: night ? 'TXF_N' : 'TXF_D',
+    name: night ? '台指期（夜盤）' : '台指期（日盤）',
+    symbol: q.SymbolID,
+    contract: q.DispCName,
+    group: 'fut',
+    currency: 'TWD',
+    price: last,
+    prevClose: ref,
+    open: num(q.COpenPrice),
+    high: num(q.CHighPrice),
+    low: num(q.CLowPrice),
+    volume: num(q.CTotalVolume),
+    bid: num(q.CBidPrice1),
+    ask: num(q.CAskPrice1),
+    settlement: num(q.SettlementPrice),
+    sessionDate: d,
+    time,
+    source: '期交所 MIS',
+    intraday: [],
+    daily: [],
+  };
+}
+
+async function loadPrevious() {
+  try {
+    return await fetchJSON(`${SITE_URL.replace(/\/?$/, '/')}data.json?_=${Date.now()}`, {}, 1);
+  } catch {
+    return null;
+  }
+}
+
+async function main() {
+  const prev = await loadPrevious();
+  const quotes = {};
+  const errors = [];
+
+  const results = await Promise.allSettled(SYMBOLS.map(fetchYahoo));
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') quotes[SYMBOLS[i].key] = r.value;
+    else {
+      errors.push(`${SYMBOLS[i].y}: ${r.reason?.message}`);
+      // 抓不到時沿用上一版（並標記 stale），避免畫面空白
+      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[SYMBOLS[i].key] : null;
+      if (old) quotes[SYMBOLS[i].key] = { ...old, stale: true };
+    }
+  });
+
+  // 證交所 MIS 覆寫（較即時），昨收以證交所為準
+  try {
+    const mis = await fetchTwseMis();
+    for (const [k, v] of Object.entries(mis)) {
+      const q = quotes[k];
+      if (!q) continue;
+      if (v.prevClose != null) q.prevClose = v.prevClose;
+      if (v.price != null && (v.time ?? 0) >= (q.time ?? 0)) {
+        Object.assign(q, { price: v.price, open: v.open ?? q.open, high: v.high ?? q.high, low: v.low ?? q.low, time: v.time, source: '證交所 MIS' });
+      }
+    }
+  } catch (e) {
+    errors.push(`TWSE MIS: ${e.message}`);
+  }
+
+  for (const mt of [0, 1]) {
+    try {
+      const f = await fetchTaifex(mt);
+      // 累積期貨盤中走勢（從上一版 data.json 接續，換交易時段就重置）
+      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[f.key] : null;
+      let series = old && old.sessionDate === f.sessionDate && old.symbol === f.symbol ? old.intraday || [] : [];
+      if (f.price != null && f.time && (!series.length || series[series.length - 1][0] < f.time)) {
+        series = [...series, [f.time, f.price]];
+      }
+      f.intraday = series.slice(-600);
+      quotes[f.key] = f;
+    } catch (e) {
+      errors.push(`TAIFEX ${mt}: ${e.message}`);
+      const k = mt ? 'TXF_N' : 'TXF_D';
+      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[k] : null;
+      if (old) quotes[k] = { ...old, stale: true };
+    }
+  }
+
+  const data = { version: SCHEMA_VERSION, generatedAt: Date.now(), quotes, errors };
+  await mkdir('site', { recursive: true });
+  await writeFile('site/data.json', JSON.stringify(data));
+  console.log(`Wrote site/data.json with ${Object.keys(quotes).length} quotes`);
+  for (const q of Object.values(quotes)) {
+    const chg = q.price != null && q.prevClose != null ? q.price - q.prevClose : null;
+    console.log(`  ${q.key.padEnd(7)} ${String(q.price).padStart(10)}  prev ${String(q.prevClose).padStart(10)}  chg ${chg?.toFixed(2)}  [${q.source}]`);
+  }
+  if (errors.length) console.warn('Errors:\n  ' + errors.join('\n  '));
+  if (Object.keys(quotes).length === 0) process.exit(1);
+}
+
+main();
