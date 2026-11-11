@@ -17,7 +17,7 @@
   const ORDER = {
     tw: ['TWII', '2330', '0050'],
     fut: ['TXF_D', 'TXF_N'],
-    usidx: ['DJI', 'GSPC', 'IXIC', 'SOX'],
+    usidx: ['DJI', 'GSPC', 'IXIC', 'SOX', 'FGI', 'VIX'],
     us: ['TSM', 'VT', 'QQQM'],
   };
   const META = {
@@ -30,6 +30,8 @@
     GSPC: { name: 'S&P 500', symbol: '^GSPC', y: '^GSPC', tz: 'America/New_York' },
     IXIC: { name: '那斯達克', symbol: '^IXIC', y: '^IXIC', tz: 'America/New_York' },
     SOX: { name: '費城半導體', symbol: '^SOX', y: '^SOX', tz: 'America/New_York' },
+    FGI: { name: 'CNN 恐慌貪婪指數', symbol: 'CNN Fear & Greed', tz: 'America/New_York' },
+    VIX: { name: 'VIX 恐慌指數', symbol: '^VIX', y: '^VIX', tz: 'America/New_York' },
     TSM: { name: '台積電 ADR', symbol: 'TSM', y: 'TSM', tz: 'America/New_York' },
     VT: { name: 'Vanguard 全世界股票', symbol: 'VT', y: 'VT', tz: 'America/New_York' },
     QQQM: { name: 'Invesco 那斯達克100', symbol: 'QQQM', y: 'QQQM', tz: 'America/New_York' },
@@ -89,7 +91,8 @@
     const n = Number(String(v).replace(/,/g, ''));
     return Number.isFinite(n) ? n : null;
   };
-  const decimalsFor = (key) => (key === 'USDTWD' ? 3 : key.startsWith('TXF') ? 0 : 2);
+  const decimalsFor = (key) => (key === 'USDTWD' ? 3 : key === 'FGI' ? 1 : key.startsWith('TXF') ? 0 : 2);
+
   const fmt = (v, d = 2) => (isNum(v) ? v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '—');
   const fmtVol = (v) => {
     if (!isNum(v) || v <= 0) return '—';
@@ -386,6 +389,60 @@
       ${base}<path d="${area}" fill="url(#${id})"/><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   }
 
+  // 恐慌貪婪指數與 VIX 區間判定
+  function getFgiZone(v) {
+    if (!isNum(v)) return null;
+    const score = Math.round(v);
+    if (score <= 25) return { idx: 0, label: '極度恐懼', en: 'Extreme Fear', range: '0 – 25', cls: 'z-efear' };
+    if (score <= 44) return { idx: 1, label: '恐懼', en: 'Fear', range: '26 – 44', cls: 'z-fear' };
+    if (score <= 55) return { idx: 2, label: '中性 / 中立', en: 'Neutral', range: '45 – 55', cls: 'z-neutral' };
+    if (score <= 74) return { idx: 3, label: '貪婪', en: 'Greed', range: '56 – 74', cls: 'z-greed' };
+    return { idx: 4, label: '極度貪婪', en: 'Extreme Greed', range: '75 – 100', cls: 'z-egreed' };
+  }
+
+  function getVixZone(v) {
+    if (!isNum(v)) return null;
+    if (v < 20) return { idx: 0, label: '常態與相對平穩區間', short: '常態平穩 (10–20)', range: '10 - 20 之間', cls: 'z-vix-low' };
+    if (v <= 30) return { idx: 1, label: '警戒區間', short: '警戒區間 (20–30)', range: '20 - 30 之間', cls: 'z-vix-mid' };
+    return { idx: 2, label: '高度恐慌區間', short: '高度恐慌 (>30)', range: '超過 30 甚至 40 以上', cls: 'z-vix-high' };
+  }
+
+  function zoneLegendHTML(key, price) {
+    if (key === 'FGI') {
+      const z = getFgiZone(price);
+      const pct = isNum(price) ? Math.max(0, Math.min(100, price)) : 50;
+      const items = [
+        [0, '0 – 25：極度恐懼（Extreme Fear）'],
+        [1, '26 – 44：恐懼（Fear）'],
+        [2, '45 – 55：中性 / 中立（Neutral）'],
+        [3, '56 – 74：貪婪（Greed）'],
+        [4, '75 – 100：極度貪婪（Extreme Greed）'],
+      ];
+      return `<div class="zone-box">
+        <div class="zone-bar fgi-bar"><i class="zone-pin" style="left:${pct.toFixed(1)}%"></i></div>
+        <ul class="zone-list">
+          ${items.map(([i, txt]) => `<li class="${z && z.idx === i ? 'active ' + z.cls : ''}">• ${txt}</li>`).join('')}
+        </ul>
+      </div>`;
+    }
+    if (key === 'VIX') {
+      const z = getVixZone(price);
+      const pct = isNum(price) ? Math.max(0, Math.min(100, ((price - 10) / 35) * 100)) : 25;
+      const items = [
+        [0, '10 - 20 之間：常態與相對平穩區間。'],
+        [1, '20 - 30 之間：警戒區間。'],
+        [2, '超過 30 甚至 40 以上：高度恐慌區間。'],
+      ];
+      return `<div class="zone-box">
+        <div class="zone-bar vix-bar"><i class="zone-pin" style="left:${pct.toFixed(1)}%"></i></div>
+        <ul class="zone-list">
+          ${items.map(([i, txt]) => `<li class="${z && z.idx === i ? 'active ' + z.cls : ''}">• ${txt}</li>`).join('')}
+        </ul>
+      </div>`;
+    }
+    return '';
+  }
+
   function cardHTML(key) {
     const q = state.quotes[key];
     const meta = META[key];
@@ -399,12 +456,28 @@
     const isFut = q.group === 'fut';
     const sym = isFut ? `${(q.symbol || '').replace(/-[FM]$/, '')} · ${q.contract || ''}` : meta.symbol;
     const baseLabel = isFut ? (key === 'TXF_D' ? '昨結' : '參考') : '昨收';
-    return `<div class="card-head"><div style="min-width:0"><div class="card-name">${meta.name}</div><div class="card-sym">${sym}</div></div><span class="badge ${st.cls}">${st.text}</span></div>
+
+    let badgeHTML = `<span class="badge ${st.cls}">${st.text}</span>`;
+    if (key === 'FGI') {
+      const fz = getFgiZone(q.price);
+      if (fz) badgeHTML = `<span class="badge zone-badge ${fz.cls}">${fz.label} (${fz.en})</span>`;
+    } else if (key === 'VIX') {
+      const vz = getVixZone(q.price);
+      if (vz) badgeHTML = `<span class="badge zone-badge ${vz.cls}">${vz.short}</span>`;
+    }
+
+    const metaRow = key === 'FGI'
+      ? `<div class="card-meta"><span>昨收<b class="num">${fmt(q.prevClose, d)}</b></span><span>1週前<b class="num">${fmt(q.prevWeek, d)}</b></span><span>1月前<b class="num">${fmt(q.prevMonth, d)}</b></span><span>${timeStr(q.time, meta.tz)}</span></div>`
+      : `<div class="card-meta"><span>${baseLabel}<b class="num">${fmt(q.prevClose, d)}</b></span><span>高<b class="num">${fmt(q.high, d)}</b></span><span>低<b class="num">${fmt(q.low, d)}</b></span><span>${timeStr(q.time, meta.tz)}</span></div>`;
+
+    return `<div class="card-head"><div style="min-width:0"><div class="card-name">${meta.name}</div><div class="card-sym">${sym}</div></div>${badgeHTML}</div>
       <div class="card-price"><div class="price ${dir}">${fmt(q.price, d)}</div>
         <div class="chg ${dir}"><span>${arrow(dir)} ${signed(chg, d)}</span><span class="pct">${signed(pct, 2)}%</span></div></div>
       ${sparkSVG(q, dir)}
-      <div class="card-meta"><span>${baseLabel}<b class="num">${fmt(q.prevClose, d)}</b></span><span>高<b class="num">${fmt(q.high, d)}</b></span><span>低<b class="num">${fmt(q.low, d)}</b></span><span>${timeStr(q.time, meta.tz)}</span></div>`;
+      ${zoneLegendHTML(key, q.price)}
+      ${metaRow}`;
   }
+
 
   const lastPrices = {};
   function renderCards() {
@@ -597,13 +670,43 @@
     $('#rsi-val').textContent = lastRSI ? lastRSI.value.toFixed(1) + (lastRSI.value >= 70 ? '（超買）' : lastRSI.value <= 30 ? '（超賣）' : '') : '—';
     const amp = isNum(q.high) && isNum(q.low) && isNum(q.prevClose) ? ((q.high - q.low) / q.prevClose) * 100 : null;
     const baseLabel = q.group === 'fut' ? (key === 'TXF_D' ? '昨日結算' : '參考價') : '昨收';
-    const stats = [
-      ['開盤', fmt(q.open, d)], ['最高', fmt(q.high, d)], ['最低', fmt(q.low, d)], [baseLabel, fmt(q.prevClose, d)],
-      ['成交量', fmtVol(q.volume)], ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
-      [state.range === '1d' ? 'MA20 (5分)' : 'MA20 (日)', lastMA ? fmt(lastMA.value, d) : '—'], ['狀態', marketStatus(q).text],
-    ];
-    $('#sheet-stats').innerHTML = stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
+
+    let stats;
+    if (key === 'FGI') {
+      const fz = getFgiZone(q.price);
+      stats = [
+        ['當前情緒', fz ? `${fz.label} (${fz.en})` : '—'],
+        ['所屬區間', fz ? fz.range : '—'],
+        ['昨日收盤', fmt(q.prevClose, d)],
+        ['1 週前', fmt(q.prevWeek, d)],
+        ['1 個月前', fmt(q.prevMonth, d)],
+        ['1 年前', fmt(q.prevYear, d)],
+        ['MA20', lastMA ? fmt(lastMA.value, d) : '—'],
+        ['資料來源', 'CNN Business'],
+      ];
+    } else if (key === 'VIX') {
+      const vz = getVixZone(q.price);
+      stats = [
+        ['所屬區間', vz ? vz.label : '—'],
+        ['區間範圍', vz ? vz.range : '—'],
+        ['開盤', fmt(q.open, d)],
+        ['最高', fmt(q.high, d)],
+        ['最低', fmt(q.low, d)],
+        ['昨收', fmt(q.prevClose, d)],
+        ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
+        [state.range === '1d' ? 'MA20 (5分)' : 'MA20 (日)', lastMA ? fmt(lastMA.value, d) : '—'],
+      ];
+    } else {
+      stats = [
+        ['開盤', fmt(q.open, d)], ['最高', fmt(q.high, d)], ['最低', fmt(q.low, d)], [baseLabel, fmt(q.prevClose, d)],
+        ['成交量', fmtVol(q.volume)], ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
+        [state.range === '1d' ? 'MA20 (5分)' : 'MA20 (日)', lastMA ? fmt(lastMA.value, d) : '—'], ['狀態', marketStatus(q).text],
+      ];
+    }
+    $('#sheet-stats').innerHTML = stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('') +
+      (key === 'FGI' || key === 'VIX' ? `<div class="sheet-zone-wrap">${zoneLegendHTML(key, q.price)}</div>` : '');
   }
+
 
   function buildSeries(q, tz) {
     if (state.range === '1d') {

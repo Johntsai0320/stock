@@ -17,11 +17,13 @@ export const SYMBOLS = [
   { key: 'GSPC', y: '^GSPC', name: 'S&P 500', group: 'usidx' },
   { key: 'IXIC', y: '^IXIC', name: '那斯達克', group: 'usidx' },
   { key: 'SOX', y: '^SOX', name: '費城半導體', group: 'usidx' },
+  { key: 'VIX', y: '^VIX', name: 'VIX 恐慌指數', group: 'usidx' },
   { key: 'TSM', y: 'TSM', name: '台積電 ADR', group: 'us' },
   { key: 'VT', y: 'VT', name: 'Vanguard 全世界股票', group: 'us' },
   { key: 'QQQM', y: 'QQQM', name: 'Invesco 那斯達克100', group: 'us' },
   { key: 'USDTWD', y: 'TWD=X', name: '美元/台幣', group: 'fx' },
 ];
+
 
 const num = (v) => {
   if (v === null || v === undefined || v === '' || v === '-') return null;
@@ -215,6 +217,51 @@ async function fetchTaifex(marketType) {
   };
 }
 
+// ---------- CNN 恐慌貪婪指數 ----------
+async function fetchCnnFearGreed() {
+  const j = await fetchJSON('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
+    headers: {
+      Referer: 'https://www.cnn.com/markets/fear-and-greed',
+      Origin: 'https://www.cnn.com',
+    },
+  });
+  const fg = j?.fear_and_greed;
+  if (!fg || fg.score == null) throw new Error('CNN FGI: missing score');
+  const price = +Number(fg.score).toFixed(1);
+  const prevClose = fg.previous_close != null ? +Number(fg.previous_close).toFixed(1) : price;
+  const time = fg.timestamp ? new Date(fg.timestamp).getTime() : Date.now();
+  const hist = (j?.fear_and_greed_historical?.data || [])
+    .filter((p) => p && p.x != null && p.y != null)
+    .map((p) => {
+      const v = +Number(p.y).toFixed(1);
+      return [Number(p.x), v, v, v, v, 0];
+    })
+    .sort((a, b) => a[0] - b[0]);
+  const intraday = hist.slice(-60).map((d) => [d[0], d[4]]);
+  const recent7 = hist.slice(-7).map((d) => d[4]);
+  return {
+    key: 'FGI',
+    name: 'CNN 恐慌貪婪指數',
+    symbol: 'CNN F&G',
+    group: 'usidx',
+    currency: 'PTS',
+    price,
+    prevClose,
+    open: prevClose,
+    high: recent7.length ? Math.max(...recent7, price) : price,
+    low: recent7.length ? Math.min(...recent7, price) : price,
+    prevWeek: fg.previous_1_week != null ? +Number(fg.previous_1_week).toFixed(1) : null,
+    prevMonth: fg.previous_1_month != null ? +Number(fg.previous_1_month).toFixed(1) : null,
+    prevYear: fg.previous_1_year != null ? +Number(fg.previous_1_year).toFixed(1) : null,
+    rating: fg.rating || '',
+    time,
+    tz: 'America/New_York',
+    source: 'CNN Business',
+    intraday,
+    daily: hist,
+  };
+}
+
 async function loadPrevious() {
   try {
     return await fetchJSON(`${SITE_URL.replace(/\/?$/, '/')}data.json?_=${Date.now()}`, {}, 1);
@@ -238,6 +285,15 @@ async function main() {
       if (old) quotes[SYMBOLS[i].key] = { ...old, stale: true };
     }
   });
+
+  // CNN 恐慌貪婪指數
+  try {
+    quotes.FGI = await fetchCnnFearGreed();
+  } catch (e) {
+    errors.push(`CNN FGI: ${e.message}`);
+    const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.FGI : null;
+    if (old) quotes.FGI = { ...old, stale: true };
+  }
 
   // 證交所 MIS 覆寫（即時真實報價），優先於延遲的 Yahoo
   try {
@@ -287,6 +343,7 @@ async function main() {
       if (old) quotes[k] = { ...old, stale: true };
     }
   }
+
 
   const data = { version: SCHEMA_VERSION, generatedAt: Date.now(), quotes, errors };
   await mkdir('site', { recursive: true });
