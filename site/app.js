@@ -151,7 +151,10 @@
     if (q.stale) return { text: '延遲', cls: 'stale' };
     const now = Date.now();
     if (q.group === 'fut') return futSessionOpen(q.key, now) ? { text: '交易中', cls: 'live' } : { text: '收盤', cls: '' };
-    if (q.session && now >= q.session.start && now < q.session.end) return { text: '交易中', cls: 'live' };
+    if (q.session && now >= q.session.start && now < q.session.end) {
+      if (q.time && q.time < q.session.start) return { text: '盤前', cls: '' };
+      return { text: '交易中', cls: 'live' };
+    }
     return { text: '已收盤', cls: '' };
   }
 
@@ -466,9 +469,13 @@
       if (vz) badgeHTML = `<span class="badge zone-badge ${vz.cls}">${vz.short}</span>`;
     }
 
+    const timeDisplay = isNum(q.time) && q.time > 0
+      ? `<span title="台北時間 ${timeStr(q.time, 'Asia/Taipei')}${meta.tz && meta.tz !== 'Asia/Taipei' ? '（美東 ' + timeStr(q.time, 'America/New_York') + '）' : ''}">${timeStr(q.time, 'Asia/Taipei')}</span>`
+      : '<span>—</span>';
+
     const metaRow = key === 'FGI'
-      ? `<div class="card-meta"><span>昨收<b class="num">${fmt(q.prevClose, d)}</b></span><span>1週前<b class="num">${fmt(q.prevWeek, d)}</b></span><span>1月前<b class="num">${fmt(q.prevMonth, d)}</b></span><span>${timeStr(q.time, meta.tz)}</span></div>`
-      : `<div class="card-meta"><span>${baseLabel}<b class="num">${fmt(q.prevClose, d)}</b></span><span>高<b class="num">${fmt(q.high, d)}</b></span><span>低<b class="num">${fmt(q.low, d)}</b></span><span>${timeStr(q.time, meta.tz)}</span></div>`;
+      ? `<div class="card-meta"><span>昨收<b class="num">${fmt(q.prevClose, d)}</b></span><span>1週前<b class="num">${fmt(q.prevWeek, d)}</b></span><span>1月前<b class="num">${fmt(q.prevMonth, d)}</b></span>${timeDisplay}</div>`
+      : `<div class="card-meta"><span>${baseLabel}<b class="num">${fmt(q.prevClose, d)}</b></span><span>高<b class="num">${fmt(q.high, d)}</b></span><span>低<b class="num">${fmt(q.low, d)}</b></span>${timeDisplay}</div>`;
 
     return `<div class="card-head"><div style="min-width:0"><div class="card-name">${meta.name}</div><div class="card-sym">${sym}</div></div>${badgeHTML}</div>
       <div class="card-price"><div class="price ${dir}">${fmt(q.price, d)}</div>
@@ -541,8 +548,13 @@
     } else if (state.snapshotAt) {
       const ageSec = Math.max(0, Math.round((now - state.snapshotAt) / 1000));
       const ageText = ageSec < 60 ? `${ageSec} 秒前` : `${Math.round(ageSec / 60)} 分鐘前`;
-      dot.className = ageSec > 180 ? 'dot warn' : 'dot ok';
-      txt.textContent = `自動同步中 · ${ageText}`;
+      if (ageSec > 180) {
+        dot.className = 'dot warn';
+        txt.textContent = `同步延遲 · ${ageText}（點擊重試）`;
+      } else {
+        dot.className = 'dot ok';
+        txt.textContent = `自動同步中 · ${ageText}`;
+      }
     } else if (Object.keys(state.quotes).length) {
       dot.className = 'dot warn';
       txt.textContent = '顯示快取資料';
@@ -655,8 +667,10 @@
     if (!q) return;
     const d = decimalsFor(key);
     const { chg, pct, dir } = calc(q);
-    $('#sheet-title').textContent = meta.name;
-    $('#sheet-sub').textContent = `${q.group === 'fut' ? `${q.contract || ''} ${q.symbol || ''}` : meta.symbol} · ${q.source || ''} · ${timeStr(q.time, meta.tz)}`;
+    const tzNote = meta.tz && meta.tz !== 'Asia/Taipei'
+      ? `台北 ${timeStr(q.time, 'Asia/Taipei')}（美東 ${timeStr(q.time, 'America/New_York')}）`
+      : timeStr(q.time, 'Asia/Taipei');
+    $('#sheet-sub').textContent = `${q.group === 'fut' ? `${q.contract || ''} ${q.symbol || ''}` : meta.symbol} · ${q.source || ''} · ${tzNote}`;
     $('#sheet-price').innerHTML = `<span class="${dir}">${fmt(q.price, d)}</span>`;
     $('#sheet-chg').className = `chg ${dir}`;
     $('#sheet-chg').innerHTML = `<span>${arrow(dir)} ${signed(chg, d)}</span><span class="pct">${signed(pct, 2)}%</span>`;
@@ -829,6 +843,8 @@
     if (state.openKey) updateSheet(true);
   });
   $('#btn-refresh').addEventListener('click', () => refreshAll(true));
+  $('#status-line').addEventListener('click', () => refreshAll(true));
+  $('#status-line').style.cursor = 'pointer';
   $('#fx-card').addEventListener('click', () => openSheet('USDTWD'));
   $('#sheet-close').addEventListener('click', closeSheet);
   $('#sheet-backdrop').addEventListener('click', closeSheet);

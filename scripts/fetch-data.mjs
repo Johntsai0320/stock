@@ -57,7 +57,12 @@ async function yahooChart(symbol, range, interval) {
   for (const h of hosts) {
     try {
       const url = `https://${h}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`;
-      const j = await fetchJSON(url);
+      const j = await fetchJSON(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json',
+        },
+      });
       const r = j?.chart?.result?.[0];
       if (!r) throw new Error('empty chart ' + symbol);
       return r;
@@ -89,7 +94,7 @@ function parseDaily(r) {
 
 async function fetchYahoo(def) {
   const [intra, daily] = await Promise.all([
-    yahooChart(def.y, '1d', '5m'),
+    yahooChart(def.y, '1d', '1m').catch(() => yahooChart(def.y, '1d', '5m')),
     yahooChart(def.y, '1y', '1d').catch(() => null),
   ]);
   const m = intra.meta;

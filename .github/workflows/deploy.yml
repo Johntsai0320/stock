@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
   schedule:
-    # 5 分鐘排程作為保底自動恢復
+    # 多重排程作為保底自動恢復
     - cron: '*/5 * * * *'
+    - cron: '2-59/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -53,8 +54,21 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Waiting 15 seconds before scheduling next high-frequency update run..."
-          sleep 15
-          gh workflow run deploy.yml --ref main || true
+          echo "Waiting 18 seconds before scheduling next high-frequency update run..."
+          sleep 18
+          SUCCESS=0
+          for i in 1 2 3 4 5 6 7 8; do
+            echo "Attempt $i: Dispatching next workflow run..."
+            if gh workflow run deploy.yml --ref main; then
+              echo "Successfully scheduled next run."
+              SUCCESS=1
+              break
+            fi
+            echo "Attempt $i failed with code $?. Retrying in 10 seconds..."
+            sleep 10
+          done
+          if [ $SUCCESS -ne 1 ]; then
+            echo "Warning: All 8 dispatch attempts failed. Fallback cron will resume."
+          fi
 
 
