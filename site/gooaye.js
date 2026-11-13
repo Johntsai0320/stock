@@ -1,8 +1,9 @@
-/* 股癌選股邏輯與全集數索引（EP1–EP711） */
+/* 股癌選股邏輯、大盤位階判讀與全集數索引（EP1–EP711） */
 (() => {
   'use strict';
 
   const CHECK_KEY = 'stockdash:gooaye-check:v1';
+  const REGIME_KEY = 'stockdash:gooaye-regime:v1';
   const PAGE_SIZE = 24;
 
   const $ = (s, r = document) => r.querySelector(s);
@@ -22,31 +23,91 @@
     filter: 'all',
     query: '',
     limit: PAGE_SIZE,
-    check: loadCheck(),
+    check: loadJson(CHECK_KEY, { ticker: '', checked: {} }),
+    regimeFlags: loadJson(REGIME_KEY, { marginHigh: false, zeusLost: false }),
   };
 
-  function loadCheck() {
+  function loadJson(key, fallback) {
     try {
-      const raw = localStorage.getItem(CHECK_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return {
-          ticker: typeof parsed.ticker === 'string' ? parsed.ticker : '',
-          checked: parsed.checked && typeof parsed.checked === 'object' ? parsed.checked : {},
-        };
-      }
+      const raw = localStorage.getItem(key);
+      if (raw) return { ...fallback, ...JSON.parse(raw) };
     } catch {}
-    return { ticker: '', checked: {} };
+    return fallback;
   }
 
-  function saveCheck() {
+  function saveJson(key, val) {
     try {
-      localStorage.setItem(CHECK_KEY, JSON.stringify(gState.check));
+      localStorage.setItem(key, JSON.stringify(val));
     } catch {}
   }
 
   function epUrl(n) {
     return `https://whatmkreallysaid.com/episode.html?file=EP${n}`;
+  }
+
+  // ---------------- 大盤位階技術計算 ----------------
+  function calcIndexMetrics(q) {
+    if (!q || !Array.isArray(q.daily) || q.daily.length < 20) return null;
+    const closes = q.daily.map((b) => Number(b[4])).filter((v) => Number.isFinite(v));
+    if (!closes.length) return null;
+
+    const price = typeof q.price === 'number' && Number.isFinite(q.price) ? q.price : closes[closes.length - 1];
+    closes[closes.length - 1] = price;
+
+    const avg = (n) => {
+      if (closes.length < n) return null;
+      let sum = 0;
+      for (let i = closes.length - n; i < closes.length; i++) sum += closes[i];
+      return sum / n;
+    };
+
+    const ma20 = avg(20);
+    const ma60 = avg(60);
+    const ma240 = avg(240);
+
+    const win52 = q.daily.slice(-252);
+    let hi52 = price;
+    let lo52 = price;
+    for (const b of win52) {
+      const h = Number(b[2]);
+      const l = Number(b[3]);
+      if (Number.isFinite(h) && h > hi52) hi52 = h;
+      if (Number.isFinite(l) && l < lo52) lo52 = l;
+    }
+    const pct52 = hi52 > lo52 ? Math.max(0, Math.min(100, ((price - lo52) / (hi52 - lo52)) * 100)) : 50;
+
+    const bias = (ma) => (ma ? ((price - ma) / ma) * 100 : null);
+    const b20 = bias(ma20);
+    const b60 = bias(ma60);
+    const b240 = bias(ma240);
+
+    let stage = '盤整觀察';
+    let stageCls = 'neutral';
+    if (b20 !== null && b60 !== null && b240 !== null) {
+      if (b20 > 0 && b60 > 0 && b240 > 0 && pct52 >= 85) {
+        stage = b60 >= 10 ? '高檔過熱區' : '多頭創高區';
+        stageCls = b60 >= 10 ? 'warn' : 'bull';
+      } else if (b20 > 0 && b60 > 0 && b240 > 0) {
+        stage = '多頭排列';
+        stageCls = 'bull';
+      } else if (b60 > 0 && b20 <= 0) {
+        stage = '月線下回檔';
+        stageCls = 'neutral';
+      } else if (b60 <= 0 && b240 > 0) {
+        stage = '季線下修正';
+        stageCls = 'warn';
+      } else if (b240 <= 0) {
+        stage = '年線下空頭防禦';
+        stageCls = 'bear';
+      }
+    }
+
+    return { price, pct52, hi52, lo52, ma20, ma60, ma240, b20, b60, b240, stage, stageCls };
+  }
+
+  function fmtBias(v) {
+    if (v === null || !Number.isFinite(v)) return '—';
+    return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
   }
 
   function setView(view) {
@@ -65,8 +126,8 @@
 
     if (isG && !gState.data && !gState.loading) {
       loadData();
-    } else if (isG && gState.data) {
-      renderLiveBanner(window.__STOCKDASH_QUOTES__ || {});
+    } else if (isG) {
+      renderRegimeSection(window.__STOCKDASH_QUOTES__ || {});
     }
   }
 
@@ -85,57 +146,164 @@
     }
   }
 
+  function renderRegimeSection(quotes) {
+    renderRegimeGrid(quotes);
+    renderRegimeToggles();
+    renderLiveBanner(quotes);
+    renderRegimeRules();
+  }
+
   function renderLiveBanner(quotes) {
     const el = $('#gooaye-live-signal');
     if (!el) return;
-    const twii = quotes.TWII;
+
+    const tw = calcIndexMetrics(quotes.TWII);
+    const sp = calcIndexMetrics(quotes.GSPC);
+    const sox = calcIndexMetrics(quotes.SOX);
     const fgi = quotes.FGI;
     const vix = quotes.VIX;
 
-    const hints = [];
+    // 綜合位階判定
+    let regimeLabel = '中性震盪觀察';
     let tone = 'neutral';
+    let actionAdvice = '維持核心配置，主動部位分批試單、不追高。';
 
-    if (fgi && typeof fgi.price === 'number') {
-      const v = fgi.price;
-      if (v >= 75) {
+    const { marginHigh, zeusLost } = gState.regimeFlags;
+    const fgiVal = fgi && typeof fgi.price === 'number' ? fgi.price : null;
+    const vixVal = vix && typeof vix.price === 'number' ? vix.price : null;
+
+    if (zeusLost || (tw && tw.b60 !== null && tw.b60 < 0 && marginHigh)) {
+      regimeLabel = '防禦減碼區（籌碼未淨／喪失宙斯）';
+      tone = 'warn';
+      actionAdvice = '扣留現金、降低槓桿，反彈偏減碼不追價（EP474、EP710）。';
+    } else if (tw && tw.b240 !== null && tw.b240 < 0) {
+      regimeLabel = '空頭／長線年線下修正';
+      tone = 'warn';
+      actionAdvice = '嚴守吃筍停損與現金部位，等待斷頭清洗尾聲再分批左側試單（EP189、EP476）。';
+    } else if (fgiVal !== null && fgiVal <= 25 && vixVal !== null && vixVal >= 24) {
+      regimeLabel = '恐慌清洗區（潛在左側機會）';
+      tone = 'opp';
+      actionAdvice = '留意去槓桿與斷頭潮尾聲，分批承接核心標的，保留安全邊際（EP255、EP476）。';
+    } else if (tw && tw.b20 > 0 && tw.b60 > 0 && tw.pct52 >= 80) {
+      if ((fgiVal !== null && fgiVal >= 75) || tw.b60 >= 10 || marginHigh) {
+        regimeLabel = '高檔多頭警戒區（偏擁擠）';
         tone = 'warn';
-        hints.push(`CNN 恐慌貪婪指數 <b>${v.toFixed(1)}（極度貪婪）</b>：留意「人多的地方不要去」（EP705），避開交易室與法人過度擁擠的熱門股，高檔檢查融資水位。`);
-      } else if (v <= 25) {
-        tone = 'opp';
-        hints.push(`CNN 恐慌貪婪指數 <b>${v.toFixed(1)}（極度恐慌）</b>：啟動「損害控制」與分批試單思維（EP169、EP256），觀察長鞭效應是否進入尾聲與優質股錯殺機會。`);
+        actionAdvice = '大盤創高但留意人多的地方不要去（EP705）；執行「新高砍弱股」，勿開高槓桿追價（EP703）。';
       } else {
-        hints.push(`CNN 恐慌貪婪指數 <b>${v.toFixed(1)}</b>：市場情緒中性，聚焦基本面與自由現金流（EP710），不盲目追高。`);
+        regimeLabel = '健康多頭創高區';
+        tone = 'opp';
+        actionAdvice = '順勢持有領漲族群，汰除連月新高都過不去的弱勢股（EP703）。';
       }
+    } else if (tw && tw.b60 !== null && tw.b60 < 0) {
+      regimeLabel = '季線下中期修正';
+      tone = 'warn';
+      actionAdvice = '縮小主動部位規模，觀察融資是否有效減肥與領頭羊止跌訊號（EP473、EP474）。';
     }
 
-    if (vix && typeof vix.price === 'number') {
-      const vx = vix.price;
-      if (vx >= 25) {
-        tone = 'warn';
-        hints.push(`VIX 波動率 <b>${vx.toFixed(2)}</b> 偏高：嚴守「吃筍停損」與現金水位紀律（EP189），降低槓桿、慎防融資斷頭連鎖反應（EP255）。`);
-      } else if (vx <= 14) {
-        hints.push(`VIX 波動率 <b>${vx.toFixed(2)}</b> 處於低檔平靜區：慎防市場過度樂觀與槓桿型 ETF 盤整損耗（EP260）。`);
+    const hints = [];
+    if (tw) {
+      hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>。`);
+    }
+    if (sox && sp) {
+      const diff = (sox.b60 ?? 0) - (sp.b60 ?? 0);
+      hints.push(`領頭羊強弱：費半季線乖離 <b>${fmtBias(sox.b60)}</b> vs S&P 500 <b>${fmtBias(sp.b60)}</b>（半導體相對${diff >= 0 ? '偏強領漲' : '轉弱須留意'}）。`);
+    }
+    if (fgiVal !== null) {
+      if (fgiVal >= 75) {
+        hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}（極度貪婪）</b>：避開法人與交易室過度擁擠的熱門標的（EP705）。`);
+      } else if (fgiVal <= 25) {
+        hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}（極度恐慌）</b>：啟動損害控制與分批試單邏輯（EP169、EP256）。`);
+      } else {
+        hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}</b>${vixVal !== null ? ` · VIX <b>${vixVal.toFixed(2)}</b>` : ''}：情緒中性，回歸自由現金流與產業瓶頸選股（EP710）。`);
       }
     }
-
-    if (twii && typeof twii.price === 'number' && typeof twii.prevClose === 'number') {
-      const pct = ((twii.price - twii.prevClose) / twii.prevClose) * 100;
-      const pctStr = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-      hints.push(`加權指數現報 <b>${twii.price.toLocaleString('en-US', { maximumFractionDigits: 0 })}</b>（${pctStr}）：若大盤創高但持股連月新高都過不去，執行「新高砍弱股」汰弱留強（EP703）。`);
-    }
+    if (marginHigh) hints.push('手動檢核：<b>融資未減／卡正二</b> — 籌碼尚未清洗乾淨，反彈易遇壓（EP473、EP710）。');
+    if (zeusLost) hints.push('手動檢核：<b>喪失宙斯法則</b> — 好財報不漲反跌，優先降槓桿扣現金（EP710）。');
 
     if (!hints.length) {
-      hints.push('正在同步即時行情… 切換至「即時看盤」或等待報價載入後，此處將自動對應股癌風控提示。');
+      hints.push('正在同步即時行情與日 K 歷史資料… 載入後將自動計算四大指數均線位階與股癌風控建議。');
     }
 
     el.className = `g-banner tone-${tone}`;
     el.innerHTML = `
       <div class="g-banner-head">
-        <span class="g-banner-title">即時盤勢 × 股癌風控雷達</span>
+        <span class="g-banner-title">股癌大盤位階判定：${esc(regimeLabel)}</span>
         <span class="badge">${gState.data ? gState.data.meta.range : 'EP1–EP711'}</span>
       </div>
+      <p class="g-banner-action">操作建議：${esc(actionAdvice)}</p>
       <ul class="g-banner-list">${hints.map((h) => `<li>${h}</li>`).join('')}</ul>
     `;
+  }
+
+  function renderRegimeGrid(quotes) {
+    const wrap = $('#gooaye-regime-grid');
+    if (!wrap) return;
+    const targets = [
+      { key: 'TWII', label: '台灣加權指數' },
+      { key: 'GSPC', label: 'S&P 500' },
+      { key: 'IXIC', label: '那斯達克' },
+      { key: 'SOX', label: '費城半導體' },
+    ];
+
+    wrap.innerHTML = targets.map(({ key, label }) => {
+      const m = calcIndexMetrics(quotes[key]);
+      if (!m) {
+        return `
+          <article class="g-reg-card">
+            <div class="g-reg-top"><strong>${esc(label)}</strong><span class="badge">載入中</span></div>
+            <div class="g-reg-price">—</div>
+          </article>
+        `;
+      }
+      return `
+        <article class="g-reg-card">
+          <div class="g-reg-top">
+            <strong>${esc(label)}</strong>
+            <span class="g-reg-badge st-${m.stageCls}">${esc(m.stage)}</span>
+          </div>
+          <div class="g-reg-price num">${m.price.toLocaleString('en-US', { maximumFractionDigits: 1 })}</div>
+          <div class="g-reg-bar-wrap">
+            <div class="g-reg-bar-head"><span>52週位階</span><span class="num">${m.pct52.toFixed(0)}%</span></div>
+            <div class="g-reg-bar"><span style="width:${m.pct52.toFixed(1)}%"></span></div>
+          </div>
+          <div class="g-reg-mas">
+            <div><span>MA20</span><b class="${m.b20 >= 0 ? 'up' : 'down'}">${fmtBias(m.b20)}</b></div>
+            <div><span>季線60</span><b class="${m.b60 >= 0 ? 'up' : 'down'}">${fmtBias(m.b60)}</b></div>
+            <div><span>年線240</span><b class="${m.b240 >= 0 ? 'up' : 'down'}">${fmtBias(m.b240)}</b></div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function renderRegimeToggles() {
+    const wrap = $('#gooaye-regime-toggles');
+    if (!wrap) return;
+    const { marginHigh, zeusLost } = gState.regimeFlags;
+    wrap.innerHTML = `
+      <label class="g-toggle-pill ${marginHigh ? 'is-on' : ''}">
+        <input type="checkbox" data-rflag="marginHigh" ${marginHigh ? 'checked' : ''} />
+        <span>盤面融資未大減 / 資金卡正二（EP473, EP710）</span>
+      </label>
+      <label class="g-toggle-pill ${zeusLost ? 'is-on' : ''}">
+        <input type="checkbox" data-rflag="zeusLost" ${zeusLost ? 'checked' : ''} />
+        <span>好財報不漲反跌：喪失宙斯法則（EP710）</span>
+      </label>
+    `;
+  }
+
+  function renderRegimeRules() {
+    const wrap = $('#gooaye-regime-rules');
+    if (!wrap || !gState.data || !gState.data.regimeRules) return;
+    wrap.innerHTML = gState.data.regimeRules.map((r) => `
+      <div class="g-rule-item">
+        <div class="g-rule-head">
+          <strong>${esc(r.title)}</strong>
+          <div class="g-ep-chips">${r.eps.map((n) => `<a class="g-ep-chip" href="${epUrl(n)}" target="_blank" rel="noopener noreferrer">EP${n}</a>`).join('')}</div>
+        </div>
+        <p>${esc(r.desc)}</p>
+      </div>
+    `).join('');
   }
 
   function renderPillars() {
@@ -271,7 +439,7 @@
   }
 
   function renderAllGooaye() {
-    renderLiveBanner(window.__STOCKDASH_QUOTES__ || {});
+    renderRegimeSection(window.__STOCKDASH_QUOTES__ || {});
     renderPillars();
     renderChecklist();
     renderEras();
@@ -286,9 +454,21 @@
 
     window.addEventListener('stockdash:quotes', (e) => {
       if (gState.view === 'gooaye') {
-        renderLiveBanner(e.detail || {});
+        renderRegimeSection(e.detail || {});
       }
     });
+
+    const toggleWrap = $('#gooaye-regime-toggles');
+    if (toggleWrap) {
+      toggleWrap.addEventListener('change', (e) => {
+        const cb = e.target;
+        if (cb && cb.matches('input[type="checkbox"][data-rflag]')) {
+          gState.regimeFlags[cb.dataset.rflag] = cb.checked;
+          saveJson(REGIME_KEY, gState.regimeFlags);
+          renderRegimeSection(window.__STOCKDASH_QUOTES__ || {});
+        }
+      });
+    }
 
     const checkWrap = $('#gooaye-checklist');
     if (checkWrap) {
@@ -296,7 +476,7 @@
         const cb = e.target;
         if (cb && cb.matches('input[type="checkbox"][data-cid]')) {
           gState.check.checked[cb.dataset.cid] = cb.checked;
-          saveCheck();
+          saveJson(CHECK_KEY, gState.check);
           renderChecklist();
         }
       });
@@ -306,7 +486,7 @@
     if (tickerEl) {
       tickerEl.addEventListener('input', () => {
         gState.check.ticker = tickerEl.value;
-        saveCheck();
+        saveJson(CHECK_KEY, gState.check);
       });
     }
 
@@ -314,7 +494,7 @@
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
         gState.check = { ticker: '', checked: {} };
-        saveCheck();
+        saveJson(CHECK_KEY, gState.check);
         renderChecklist();
       });
     }
