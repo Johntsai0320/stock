@@ -660,6 +660,203 @@
     }
   }
 
+  // ---------------- 均線型態與多空排列、黃金/死亡交叉分析 ----------------
+  function analyzeMovingAverages(rows, currentPrice) {
+    if (!rows || rows.length < 20) return null;
+    const closes = rows.map((r) => r.c);
+    const len = closes.length;
+    const m20 = sma(closes, 20);
+    const m60 = sma(closes, 60);
+    const m120 = sma(closes, 120);
+    const m240 = sma(closes, 240);
+
+    const cur20 = m20[len - 1];
+    const cur60 = m60[len - 1];
+    const cur120 = m120[len - 1];
+    const cur240 = m240[len - 1];
+
+    const p = isNum(currentPrice) ? currentPrice : closes[len - 1];
+    const calcBias = (ma) => (isNum(ma) && ma !== 0 ? +(((p - ma) / ma) * 100).toFixed(2) : null);
+
+    const mas = {
+      ma20: { name: '月線 (20MA)', label: '月線', days: 20, val: cur20, bias: calcBias(cur20), color: '#f2b544' },
+      ma60: { name: '季線 (60MA)', label: '季線', days: 60, val: cur60, bias: calcBias(cur60), color: '#5ab0f0' },
+      ma120: { name: '半年線 (120MA)', label: '半年線', days: 120, val: cur120, bias: calcBias(cur120), color: '#c678dd' },
+      ma240: { name: '年線 (240MA)', label: '年線', days: 240, val: cur240, bias: calcBias(cur240), color: '#4cd964' },
+    };
+
+    // 檢查近 5 交易日均線走向（斜率）
+    const prevIdx = Math.max(0, len - 6);
+    const slope20 = cur20 != null && m20[prevIdx] != null ? cur20 - m20[prevIdx] : 0;
+    const slope60 = cur60 != null && m60[prevIdx] != null ? cur60 - m60[prevIdx] : 0;
+
+    let pattern = { type: 'neutral', label: '均線糾結（整理）', cls: 'neutral', desc: '' };
+
+    const hasAll4 = isNum(cur20) && isNum(cur60) && isNum(cur120) && isNum(cur240);
+    const has3 = isNum(cur20) && isNum(cur60) && isNum(cur120);
+
+    const isBullOrder = hasAll4
+      ? (cur20 >= cur60 && cur60 >= cur120 && cur120 >= cur240)
+      : has3
+      ? (cur20 >= cur60 && cur60 >= cur120)
+      : (cur20 >= cur60);
+
+    const isBearOrder = hasAll4
+      ? (cur20 <= cur60 && cur60 <= cur120 && cur120 <= cur240)
+      : has3
+      ? (cur20 <= cur60 && cur60 <= cur120)
+      : (cur20 <= cur60);
+
+    if (isBullOrder) {
+      if (slope20 > 0 && slope60 > 0) {
+        pattern = {
+          type: 'bull_strong',
+          label: '多頭排列（偏多）',
+          cls: 'bull',
+          desc: hasAll4
+            ? '短期均線在長期均線之上（月線 > 季線 > 半年線 > 年線），且均線由左下往右上揚升發展，呈標準多頭排列（偏多格局）。'
+            : '短期均線在長期均線之上且均線由左下往右上發展，呈多頭排列（偏多格局）。',
+        };
+      } else {
+        pattern = {
+          type: 'bull',
+          label: '多頭排列（偏多・震盪）',
+          cls: 'bull',
+          desc: '短期均線仍維持在長期均線之上，惟短期均線走平或微幅回檔，維持偏多震盪整理。',
+        };
+      }
+    } else if (isBearOrder) {
+      if (slope20 < 0 && slope60 < 0) {
+        pattern = {
+          type: 'bear_strong',
+          label: '空頭排列（偏空）',
+          cls: 'bear',
+          desc: hasAll4
+            ? '短期均線在長期均線之下（月線 < 季線 < 半年線 < 年線），且均線由左上往右下傾斜發散，呈標準空頭排列（偏空格局）。'
+            : '短期均線在長期均線之下且均線由左上往右下發展，呈空頭排列（偏空格局）。',
+        };
+      } else {
+        pattern = {
+          type: 'bear',
+          label: '空頭排列（偏空・反彈）',
+          cls: 'bear',
+          desc: '短期均線仍在長期均線之下，均線走向偏弱，惟短線有跌深收斂或反彈跡象，仍屬偏空格局。',
+        };
+      }
+    } else {
+      if (cur20 > cur60 && cur20 > cur120) {
+        pattern = {
+          type: 'rebound',
+          label: '短多震盪格局',
+          cls: 'bull',
+          desc: '月線已向上穿越季線與半年線轉強，但中長期均線尚未完全轉為順向多頭，處於轉折整理期。',
+        };
+      } else if (cur20 < cur60 && cur20 < cur120) {
+        pattern = {
+          type: 'pullback',
+          label: '短空震盪格局',
+          cls: 'bear',
+          desc: '月線跌破季線與半年線轉弱，但中長期均線仍在下方具支撐，呈現高檔回檔修正格局。',
+        };
+      } else {
+        pattern = {
+          type: 'entangled',
+          label: '均線糾結（整理）',
+          cls: 'neutral',
+          desc: '短期與長期均線相互交錯糾結，多空方向未明，處於區間震盪整理型態。',
+        };
+      }
+    }
+
+    // 均線交叉檢測（黃金交叉 / 死亡交叉）
+    const pairs = [
+      { name: '月線 × 季線', fast: m20, slow: m60, fName: '月線(20MA)', sName: '季線(60MA)' },
+      { name: '月線 × 半年線', fast: m20, slow: m120, fName: '月線(20MA)', sName: '半年線(120MA)' },
+      { name: '月線 × 年線', fast: m20, slow: m240, fName: '月線(20MA)', sName: '年線(240MA)' },
+      { name: '季線 × 半年線', fast: m60, slow: m120, fName: '季線(60MA)', sName: '半年線(120MA)' },
+      { name: '季線 × 年線', fast: m60, slow: m240, fName: '季線(60MA)', sName: '年線(240MA)' },
+      { name: '半年線 × 年線', fast: m120, slow: m240, fName: '半年線(120MA)', sName: '年線(240MA)' },
+    ];
+
+    const crossEvents = [];
+    for (const pair of pairs) {
+      for (let i = len - 1; i >= Math.max(1, len - 90); i--) {
+        const f0 = pair.fast[i], s0 = pair.slow[i];
+        const f1 = pair.fast[i - 1], s1 = pair.slow[i - 1];
+        if (f0 == null || s0 == null || f1 == null || s1 == null) continue;
+        if (f0 > s0 && f1 <= s1) {
+          crossEvents.push({
+            pair: pair.name,
+            type: 'golden',
+            label: '黃金交叉（偏多訊號）',
+            cls: 'bull',
+            date: rows[i].date,
+            daysAgo: len - 1 - i,
+            desc: `${pair.fName} 向上穿越 ${pair.sName}，形成黃金交叉（偏多訊號）`,
+          });
+          break;
+        } else if (f0 < s0 && f1 >= s1) {
+          crossEvents.push({
+            pair: pair.name,
+            type: 'death',
+            label: '死亡交叉（偏空訊號）',
+            cls: 'bear',
+            date: rows[i].date,
+            daysAgo: len - 1 - i,
+            desc: `${pair.fName} 向下穿越 ${pair.sName}，形成死亡交叉（偏空訊號）`,
+          });
+          break;
+        }
+      }
+    }
+
+    crossEvents.sort((a, b) => a.daysAgo - b.daysAgo);
+    const latestCross = crossEvents[0] || null;
+
+    return {
+      mas,
+      pattern,
+      latestCross,
+      crossEvents,
+    };
+  }
+
+  function renderMaPanel(diag, d) {
+    if (!diag) return '';
+    const m = diag.mas;
+    const crossHTML = diag.latestCross
+      ? `<div class="ma-cross-box ${diag.latestCross.cls}">
+          <span class="ma-cross-tag">${diag.latestCross.type === 'golden' ? '✨ 黃金交叉（偏多訊號）' : '⚠️ 死亡交叉（偏空訊號）'}</span>
+          <span class="ma-cross-detail">${diag.latestCross.desc} · <strong>${diag.latestCross.date}</strong>（${diag.latestCross.daysAgo === 0 ? '今日發生' : diag.latestCross.daysAgo + ' 天前'}）</span>
+        </div>`
+      : '';
+
+    const items = [m.ma20, m.ma60, m.ma120, m.ma240].filter((item) => item && isNum(item.val));
+
+    return `<div class="ma-panel">
+      <div class="ma-panel-head">
+        <div class="ma-panel-title">均線型態與多空指標</div>
+        <div class="ma-badges">
+          <span class="ma-badge ${diag.pattern.cls}">${diag.pattern.label}</span>
+          ${diag.latestCross ? `<span class="ma-badge ${diag.latestCross.cls}">${diag.latestCross.type === 'golden' ? '黃金交叉' : '死亡交叉'}</span>` : ''}
+        </div>
+      </div>
+      <p class="ma-desc">${diag.pattern.desc}</p>
+      ${crossHTML}
+      <div class="ma-grid">
+        ${items
+          .map(
+            (item) => `<div class="ma-item">
+            <div class="ma-name"><i style="background:${item.color}"></i>${item.name}</div>
+            <div class="ma-val">${fmt(item.val, d)}</div>
+            <div class="ma-bias ${item.bias >= 0 ? 'up' : 'down'}">乖離 ${signed(item.bias, 2)}%</div>
+          </div>`
+          )
+          .join('')}
+      </div>
+    </div>`;
+  }
+
   function updateSheet(rebuild) {
     const key = state.openKey;
     const q = state.quotes[key];
@@ -678,6 +875,11 @@
 
     const series = buildSeries(q, meta.tz);
     drawCharts(series, q, rebuild);
+
+    const rows = alignedDaily(q, meta.tz);
+    const diag = analyzeMovingAverages(rows, q.price);
+    const maEl = $('#sheet-ma');
+    if (maEl) maEl.innerHTML = renderMaPanel(diag, d);
 
     const lastMA = series.ma20.filter((p) => p).pop();
     const lastRSI = series.rsi.filter((p) => p).pop();
@@ -708,13 +910,18 @@
         ['最低', fmt(q.low, d)],
         ['昨收', fmt(q.prevClose, d)],
         ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
-        [state.range === '1d' ? 'MA20 (5分)' : 'MA20 (日)', lastMA ? fmt(lastMA.value, d) : '—'],
+        [state.range === '1d' ? '分時 MA20' : '月線 (20MA)', lastMA ? fmt(lastMA.value, d) : '—'],
       ];
     } else {
       stats = [
         ['開盤', fmt(q.open, d)], ['最高', fmt(q.high, d)], ['最低', fmt(q.low, d)], [baseLabel, fmt(q.prevClose, d)],
         ['成交量', fmtVol(q.volume)], ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
-        [state.range === '1d' ? 'MA20 (5分)' : 'MA20 (日)', lastMA ? fmt(lastMA.value, d) : '—'], ['狀態', marketStatus(q).text],
+        ['月線 (20MA)', diag?.mas?.ma20?.val ? fmt(diag.mas.ma20.val, d) : '—'],
+        ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
+        ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
+        ['年線 (240MA)', diag?.mas?.ma240?.val ? fmt(diag.mas.ma240.val, d) : '—'],
+        ['均線型態', diag?.pattern?.label || '—'],
+        ['狀態', marketStatus(q).text],
       ];
     }
     $('#sheet-stats').innerHTML = stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('') +
@@ -740,12 +947,15 @@
         kind: 'line', line,
         ma20: line.map((p, i) => (m[i] != null ? { time: p.time, value: m[i] } : null)),
         ma60: [],
+        ma120: [],
+        ma240: [],
         rsi: line.map((p, i) => (r[i] != null ? { time: p.time, value: r[i] } : null)),
       };
     }
     const rows = alignedDaily(q, tz);
     const closes = rows.map((r) => r.c);
-    const m20 = sma(closes, 20), m60 = sma(closes, 60), r = rsi(closes, 14);
+    const m20 = sma(closes, 20), m60 = sma(closes, 60), m120 = sma(closes, 120), m240 = sma(closes, 240);
+    const r = rsi(closes, 14);
     const n = { '3m': 63, '6m': 126, '1y': 260 }[state.range] || 126;
     const from = Math.max(0, rows.length - n);
     const sl = (arr) => arr.slice(from);
@@ -754,6 +964,8 @@
       candles: sl(rows).map((x) => ({ time: x.date, open: x.o, high: x.h, low: x.l, close: x.c })),
       ma20: sl(rows.map((x, i) => (m20[i] != null ? { time: x.date, value: m20[i] } : null))),
       ma60: sl(rows.map((x, i) => (m60[i] != null ? { time: x.date, value: m60[i] } : null))),
+      ma120: sl(rows.map((x, i) => (m120[i] != null ? { time: x.date, value: m120[i] } : null))),
+      ma240: sl(rows.map((x, i) => (m240[i] != null ? { time: x.date, value: m240[i] } : null))),
       rsi: sl(rows.map((x, i) => (r[i] != null ? { time: x.date, value: r[i] } : null))),
     };
   }
@@ -769,7 +981,7 @@
     const c = colors();
     const { dir } = calc(q);
     const lineColor = c[dir];
-    const MA20 = '#f2b544', MA60 = '#5ab0f0';
+    const MA20 = '#f2b544', MA60 = '#5ab0f0', MA120 = '#c678dd', MA240 = '#4cd964';
     const empty = s.kind === 'line' ? s.line.length < 2 : s.candles.length < 2;
 
     if (rebuild || !state.charts || state.charts.kind !== s.kind) {
@@ -800,12 +1012,14 @@
       }
       const ma20 = main.addLineSeries({ color: MA20, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const ma60 = main.addLineSeries({ color: MA60, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      const ma120 = main.addLineSeries({ color: MA120, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      const ma240 = main.addLineSeries({ color: MA240, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const rsiS = rsiC.addLineSeries({ color: '#c9a7ff', lineWidth: 1.5, priceLineVisible: false });
       rsiS.createPriceLine({ price: 70, color: 'rgba(255,255,255,0.25)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
       rsiS.createPriceLine({ price: 30, color: 'rgba(255,255,255,0.25)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
       // 兩圖時間軸同步
       main.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rsiC.timeScale().setVisibleLogicalRange(r));
-      state.charts = { kind: s.kind, main, rsi: rsiC, price, ma20, ma60, rsiS, baseLine: null };
+      state.charts = { kind: s.kind, main, rsi: rsiC, price, ma20, ma60, ma120, ma240, rsiS, baseLine: null };
     }
     if (empty) return;
     const ch = state.charts;
@@ -820,14 +1034,25 @@
     }
     ch.ma20.setData(s.ma20.filter(Boolean));
     ch.ma60.setData(s.ma60.filter(Boolean));
+    if (ch.ma120) ch.ma120.setData((s.ma120 || []).filter(Boolean));
+    if (ch.ma240) ch.ma240.setData((s.ma240 || []).filter(Boolean));
     ch.rsiS.setData(s.rsi.filter(Boolean));
     if (rebuild) {
       ch.main.timeScale().fitContent();
       ch.rsi.timeScale().fitContent();
     }
-    $('#sheet-legend').innerHTML =
-      `<span><i style="background:${MA20}"></i>MA20</span>` + (s.ma60.some(Boolean) ? `<span><i style="background:${MA60}"></i>MA60</span>` : '') +
-      `<span>${s.kind === 'line' ? '5 分鐘走勢' : '日 K'}</span>`;
+    if (s.kind === 'line') {
+      $('#sheet-legend').innerHTML =
+        `<span><i style="background:${MA20}"></i>分時 MA20</span>` +
+        `<span>5 分鐘走勢</span>`;
+    } else {
+      $('#sheet-legend').innerHTML =
+        `<span><i style="background:${MA20}"></i>月線 MA20</span>` +
+        (s.ma60.some(Boolean) ? `<span><i style="background:${MA60}"></i>季線 MA60</span>` : '') +
+        ((s.ma120 || []).some(Boolean) ? `<span><i style="background:${MA120}"></i>半年線 MA120</span>` : '') +
+        ((s.ma240 || []).some(Boolean) ? `<span><i style="background:${MA240}"></i>年線 MA240</span>` : '') +
+        `<span>日 K</span>`;
+    }
   }
 
   // ---------------- 事件 ----------------

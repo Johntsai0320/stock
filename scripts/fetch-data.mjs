@@ -95,7 +95,7 @@ function parseDaily(r) {
 async function fetchYahoo(def) {
   const [intra, daily] = await Promise.all([
     yahooChart(def.y, '1d', '1m').catch(() => yahooChart(def.y, '1d', '5m')),
-    yahooChart(def.y, '1y', '1d').catch(() => null),
+    yahooChart(def.y, '2y', '1d').catch(() => yahooChart(def.y, '1y', '1d')).catch(() => null),
   ]);
   const m = intra.meta;
   // 昨收：range=1d 時 previousClose / chartPreviousClose 皆為「前一交易日收盤」
