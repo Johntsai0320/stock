@@ -146,8 +146,155 @@
     }
   }
 
+  function fmtYi(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)} 億`;
+  }
+
+  function fmtDateTW(d) {
+    if (!d || d.length !== 8) return '';
+    return `${d.slice(0, 4)}/${d.slice(4, 6)}/${d.slice(6, 8)}`;
+  }
+
+  function analyzeChips(quotes, tw) {
+    const margin = quotes.MARGIN;
+    const inst = quotes.INST;
+    const twiiQ = quotes.TWII;
+    const twDayDown = twiiQ && typeof twiiQ.price === 'number' && typeof twiiQ.prevClose === 'number'
+      ? twiiQ.price < twiiQ.prevClose
+      : false;
+    const twBelowMa60 = tw && tw.b60 !== null && tw.b60 < 0;
+
+    let marginSignal = { label: '尚無融資資料', cls: 'neutral', hint: '', autoSticky: false, cleanFlush: false };
+    if (margin && typeof margin.price === 'number') {
+      const chg = typeof margin.chg === 'number' ? margin.chg : (margin.price - (margin.prevClose ?? margin.price));
+      if ((twDayDown || twBelowMa60) && chg >= -5) {
+        marginSignal = {
+          label: '融資未減警戒',
+          cls: 'warn',
+          hint: `台股融資餘額 <b>${margin.price.toLocaleString('en-US', { minimumFractionDigits: 2 })} 億</b>（單日 <b>${fmtYi(chg)}</b>）：大盤走弱但融資未明顯減肥，籌碼尚未洗淨，反彈易遇壓（EP473、EP710）。`,
+          autoSticky: true,
+          cleanFlush: false,
+        };
+      } else if (chg <= -30 || (margin.chgPct != null && margin.chgPct <= -1)) {
+        marginSignal = {
+          label: '融資大減清洗',
+          cls: 'bull',
+          hint: `台股融資餘額 <b>${margin.price.toLocaleString('en-US', { minimumFractionDigits: 2 })} 億</b>（單日 <b>${fmtYi(chg)}</b>）：出現明顯去槓桿清洗，留意斷頭尾聲與分批試單機會（EP255、EP476）。`,
+          autoSticky: false,
+          cleanFlush: true,
+        };
+      } else if (chg >= 25) {
+        marginSignal = {
+          label: '融資快速升溫',
+          cls: 'warn',
+          hint: `台股融資餘額 <b>${margin.price.toLocaleString('en-US', { minimumFractionDigits: 2 })} 億</b>（單日 <b>${fmtYi(chg)}</b>）：散戶槓桿快速墊高，高檔須提防籌碼擁擠與急殺風險（EP473）。`,
+          autoSticky: false,
+          cleanFlush: false,
+        };
+      } else {
+        marginSignal = {
+          label: '融資變動溫和',
+          cls: 'neutral',
+          hint: `台股融資餘額 <b>${margin.price.toLocaleString('en-US', { minimumFractionDigits: 2 })} 億</b>（單日 <b>${fmtYi(chg)}</b>）：信用槓桿變動尚屬平穩。`,
+          autoSticky: false,
+          cleanFlush: false,
+        };
+      }
+    }
+
+    let instSignal = { label: '尚無法人資料', cls: 'neutral', hint: '' };
+    if (inst && typeof inst.foreignYi === 'number') {
+      const f = inst.foreignYi;
+      const mChg = margin && typeof margin.chg === 'number' ? margin.chg : null;
+      if (f >= 150) {
+        const combo = mChg !== null && mChg < 0 ? '，且融資同步減肥，屬<b>籌碼良性換手</b>（散戶流向法人）' : '，權值與電子多頭動能有撐';
+        instSignal = {
+          label: '外資大舉買超',
+          cls: 'bull',
+          hint: `外資買賣超 <b>${fmtYi(f)}</b>（三大法人合計 <b>${fmtYi(inst.totalYi)}</b>）${combo}（EP1、EP57）。`,
+        };
+      } else if (f <= -150) {
+        const combo = mChg !== null && mChg > 10 ? '，但融資卻逆勢大增，留意<b>法人倒貨、散戶接刀</b>風險' : '，權值股短線承壓，須同步觀察匯率貶值與止穩訊號';
+        instSignal = {
+          label: '外資大幅賣超',
+          cls: 'bear',
+          hint: `外資買賣超 <b>${fmtYi(f)}</b>（三大法人合計 <b>${fmtYi(inst.totalYi)}</b>）${combo}（EP1、EP476）。`,
+        };
+      } else {
+        instSignal = {
+          label: f >= 0 ? '外資小幅買超' : '外資小幅賣超',
+          cls: 'neutral',
+          hint: `外資買賣超 <b>${fmtYi(f)}</b>（投信 <b>${fmtYi(inst.trustYi)}</b> · 自營 <b>${fmtYi(inst.dealerYi)}</b> · 合計 <b>${fmtYi(inst.totalYi)}</b>）。`,
+        };
+      }
+    }
+
+    return { marginSignal, instSignal };
+  }
+
+  function renderChipCards(selector, quotes) {
+    const wrap = $(selector);
+    if (!wrap) return;
+    const margin = quotes.MARGIN;
+    const inst = quotes.INST;
+    const tw = calcIndexMetrics(quotes.TWII);
+    const { marginSignal, instSignal } = analyzeChips(quotes, tw);
+
+    const mHtml = margin && typeof margin.price === 'number' ? (() => {
+      const chg = typeof margin.chg === 'number' ? margin.chg : (margin.price - (margin.prevClose ?? margin.price));
+      const chgCls = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+      const shortTxt = margin.shortShares != null
+        ? `融券 ${margin.shortShares.toLocaleString('en-US')} 張（${margin.shortChg >= 0 ? '+' : '−'}${Math.abs(margin.shortChg || 0).toLocaleString('en-US')}）`
+        : '—';
+      return `
+        <article class="g-chip-card">
+          <div class="g-reg-top">
+            <strong>台股融資餘額 <small class="muted">${esc(fmtDateTW(margin.date))}</small></strong>
+            <span class="g-reg-badge st-${marginSignal.cls}">${esc(marginSignal.label)}</span>
+          </div>
+          <div class="g-chip-main">
+            <span class="g-reg-price num">${margin.price.toLocaleString('en-US', { minimumFractionDigits: 2 })} <small>億</small></span>
+            <span class="g-chip-chg num ${chgCls}">${fmtYi(chg)}（${margin.chgPct >= 0 ? '+' : ''}${(margin.chgPct ?? 0).toFixed(2)}%）</span>
+          </div>
+          <div class="g-chip-sub">${shortTxt} · ${esc(margin.source || '證交所')}${margin.stale ? '（盤中沿用前日）' : ''}</div>
+        </article>
+      `;
+    })() : `
+      <article class="g-chip-card">
+        <div class="g-reg-top"><strong>台股融資餘額</strong><span class="badge">待盤後更新</span></div>
+        <div class="g-reg-price">—</div>
+      </article>
+    `;
+
+    const iHtml = inst && typeof inst.foreignYi === 'number' ? (() => {
+      const fCls = inst.foreignYi > 0 ? 'up' : inst.foreignYi < 0 ? 'down' : '';
+      return `
+        <article class="g-chip-card">
+          <div class="g-reg-top">
+            <strong>外資買賣超 <small class="muted">${esc(fmtDateTW(inst.date))}</small></strong>
+            <span class="g-reg-badge st-${instSignal.cls}">${esc(instSignal.label)}</span>
+          </div>
+          <div class="g-chip-main">
+            <span class="g-reg-price num ${fCls}">${fmtYi(inst.foreignYi)}</span>
+            <span class="g-chip-chg num">三大合計 ${fmtYi(inst.totalYi)}</span>
+          </div>
+          <div class="g-chip-sub">投信 ${fmtYi(inst.trustYi)} · 自營 ${fmtYi(inst.dealerYi)} · ${esc(inst.source || '證交所')}${inst.stale ? '（盤中沿用前日）' : ''}</div>
+        </article>
+      `;
+    })() : `
+      <article class="g-chip-card">
+        <div class="g-reg-top"><strong>外資買賣超</strong><span class="badge">待盤後更新</span></div>
+        <div class="g-reg-price">—</div>
+      </article>
+    `;
+
+    wrap.innerHTML = mHtml + iHtml;
+  }
+
   function renderRegimeSection(quotes) {
     renderRegimeGrid(quotes);
+    renderChipCards('#gooaye-chip-grid', quotes);
     renderRegimeToggles();
     renderLiveBanner(quotes);
     renderRegimeRules();
@@ -162,17 +309,19 @@
     const sox = calcIndexMetrics(quotes.SOX);
     const fgi = quotes.FGI;
     const vix = quotes.VIX;
+    const { marginSignal, instSignal } = analyzeChips(quotes, tw);
 
     // 綜合位階判定
     let regimeLabel = '中性震盪觀察';
     let tone = 'neutral';
     let actionAdvice = '維持核心配置，主動部位分批試單、不追高。';
 
-    const { marginHigh, zeusLost } = gState.regimeFlags;
+    const marginSticky = gState.regimeFlags.marginHigh || marginSignal.autoSticky;
+    const { zeusLost } = gState.regimeFlags;
     const fgiVal = fgi && typeof fgi.price === 'number' ? fgi.price : null;
     const vixVal = vix && typeof vix.price === 'number' ? vix.price : null;
 
-    if (zeusLost || (tw && tw.b60 !== null && tw.b60 < 0 && marginHigh)) {
+    if (zeusLost || (tw && tw.b60 !== null && tw.b60 < 0 && marginSticky)) {
       regimeLabel = '防禦減碼區（籌碼未淨／喪失宙斯）';
       tone = 'warn';
       actionAdvice = '扣留現金、降低槓桿，反彈偏減碼不追價（EP474、EP710）。';
@@ -180,12 +329,12 @@
       regimeLabel = '空頭／長線年線下修正';
       tone = 'warn';
       actionAdvice = '嚴守吃筍停損與現金部位，等待斷頭清洗尾聲再分批左側試單（EP189、EP476）。';
-    } else if (fgiVal !== null && fgiVal <= 25 && vixVal !== null && vixVal >= 24) {
-      regimeLabel = '恐慌清洗區（潛在左側機會）';
+    } else if ((fgiVal !== null && fgiVal <= 25 && vixVal !== null && vixVal >= 24) || marginSignal.cleanFlush) {
+      regimeLabel = '恐慌／融資清洗區（潛在左側機會）';
       tone = 'opp';
       actionAdvice = '留意去槓桿與斷頭潮尾聲，分批承接核心標的，保留安全邊際（EP255、EP476）。';
     } else if (tw && tw.b20 > 0 && tw.b60 > 0 && tw.pct52 >= 80) {
-      if ((fgiVal !== null && fgiVal >= 75) || tw.b60 >= 10 || marginHigh) {
+      if ((fgiVal !== null && fgiVal >= 75) || tw.b60 >= 10 || marginSticky) {
         regimeLabel = '高檔多頭警戒區（偏擁擠）';
         tone = 'warn';
         actionAdvice = '大盤創高但留意人多的地方不要去（EP705）；執行「新高砍弱股」，勿開高槓桿追價（EP703）。';
@@ -204,6 +353,8 @@
     if (tw) {
       hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>。`);
     }
+    if (marginSignal.hint) hints.push(marginSignal.hint);
+    if (instSignal.hint) hints.push(instSignal.hint);
     if (sox && sp) {
       const diff = (sox.b60 ?? 0) - (sp.b60 ?? 0);
       hints.push(`領頭羊強弱：費半季線乖離 <b>${fmtBias(sox.b60)}</b> vs S&P 500 <b>${fmtBias(sp.b60)}</b>（半導體相對${diff >= 0 ? '偏強領漲' : '轉弱須留意'}）。`);
@@ -217,7 +368,7 @@
         hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}</b>${vixVal !== null ? ` · VIX <b>${vixVal.toFixed(2)}</b>` : ''}：情緒中性，回歸自由現金流與產業瓶頸選股（EP710）。`);
       }
     }
-    if (marginHigh) hints.push('手動檢核：<b>融資未減／卡正二</b> — 籌碼尚未清洗乾淨，反彈易遇壓（EP473、EP710）。');
+    if (gState.regimeFlags.marginHigh) hints.push('手動檢核：<b>資金卡正二／質押水位高</b> — 籌碼尚未清洗乾淨，反彈易遇壓（EP473、EP710）。');
     if (zeusLost) hints.push('手動檢核：<b>喪失宙斯法則</b> — 好財報不漲反跌，優先降槓桿扣現金（EP710）。');
 
     if (!hints.length) {
@@ -453,10 +604,15 @@
     });
 
     window.addEventListener('stockdash:quotes', (e) => {
+      const q = e.detail || {};
+      renderChipCards('#grid-twchip', q);
       if (gState.view === 'gooaye') {
-        renderRegimeSection(e.detail || {});
+        renderRegimeSection(q);
       }
     });
+    if (window.__STOCKDASH_QUOTES__) {
+      renderChipCards('#grid-twchip', window.__STOCKDASH_QUOTES__);
+    }
 
     const toggleWrap = $('#gooaye-regime-toggles');
     if (toggleWrap) {

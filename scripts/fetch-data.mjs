@@ -267,6 +267,85 @@ async function fetchCnnFearGreed() {
   };
 }
 
+// ---------- 證交所：融資餘額 & 三大法人（外資買賣超） ----------
+async function fetchTwseMargin() {
+  const j = await fetchJSON('https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?response=json&selectType=MS', {
+    headers: { Referer: 'https://www.twse.com.tw/zh/trading/margin/mi-margn.html' },
+  });
+  if (j?.stat !== 'OK' || !Array.isArray(j.tables) || !j.tables.length) {
+    throw new Error(`TWSE MI_MARGN stat=${j?.stat || 'unknown'}`);
+  }
+  const rows = j.tables[0]?.data || [];
+  const amtRow = rows.find((r) => String(r[0]).includes('融資金額'));
+  const shortRow = rows.find((r) => String(r[0]).includes('融券'));
+  if (!amtRow) throw new Error('TWSE MI_MARGN: missing 融資金額 row');
+  const prevK = num(amtRow[4]); // 仟元
+  const todayK = num(amtRow[5]);
+  if (todayK == null || prevK == null) throw new Error('TWSE MI_MARGN: invalid balance');
+  const balanceYi = +(todayK / 1e5).toFixed(2); // 仟元 -> 億元
+  const prevBalanceYi = +(prevK / 1e5).toFixed(2);
+  const chgYi = +(balanceYi - prevBalanceYi).toFixed(2);
+  const chgPct = prevBalanceYi > 0 ? +((chgYi / prevBalanceYi) * 100).toFixed(2) : 0;
+  const shortShares = shortRow ? num(shortRow[5]) : null;
+  const prevShortShares = shortRow ? num(shortRow[4]) : null;
+  return {
+    key: 'MARGIN',
+    name: '台股融資餘額',
+    symbol: 'TWSE Margin',
+    group: 'twchip',
+    currency: '億TWD',
+    price: balanceYi,
+    prevClose: prevBalanceYi,
+    chg: chgYi,
+    chgPct,
+    shortShares,
+    shortChg: shortShares != null && prevShortShares != null ? shortShares - prevShortShares : null,
+    date: j.date || '',
+    time: Date.now(),
+    tz: 'Asia/Taipei',
+    source: '證交所信用交易',
+  };
+}
+
+async function fetchTwseInst() {
+  const j = await fetchJSON('https://www.twse.com.tw/rwd/zh/fund/BFI82U?response=json&type=day', {
+    headers: { Referer: 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html' },
+  });
+  if (j?.stat !== 'OK' || !Array.isArray(j.data)) {
+    throw new Error(`TWSE BFI82U stat=${j?.stat || 'unknown'}`);
+  }
+  const byName = (kw) => {
+    const row = j.data.find((r) => String(r[0]).includes(kw));
+    return row ? num(row[3]) : 0;
+  };
+  const foreignNet = (byName('外資及陸資') ?? 0) + (byName('外資自營商') ?? 0);
+  const trustNet = byName('投信') ?? 0;
+  const dealerNet = (byName('自營商(自行買賣)') ?? 0) + (byName('自營商(避險)') ?? 0);
+  const totalNet = byName('合計') ?? (foreignNet + trustNet + dealerNet);
+  const toYi = (v) => +(v / 1e8).toFixed(2);
+  const foreignYi = toYi(foreignNet);
+  const trustYi = toYi(trustNet);
+  const dealerYi = toYi(dealerNet);
+  const totalYi = toYi(totalNet);
+  return {
+    key: 'INST',
+    name: '外資買賣超',
+    symbol: 'TWSE Foreign Net',
+    group: 'twchip',
+    currency: '億TWD',
+    price: foreignYi,
+    prevClose: 0,
+    foreignYi,
+    trustYi,
+    dealerYi,
+    totalYi,
+    date: j.date || '',
+    time: Date.now(),
+    tz: 'Asia/Taipei',
+    source: '證交所三大法人',
+  };
+}
+
 async function loadPrevious() {
   try {
     return await fetchJSON(`${SITE_URL.replace(/\/?$/, '/')}data.json?_=${Date.now()}`, {}, 1);
@@ -349,6 +428,28 @@ async function main() {
     }
   }
 
+
+  // 證交所融資餘額 & 外資買賣超（盤後更新；盤中若尚未公布則沿用前一交易日快照）
+  for (const [key, fn, label] of [
+    ['MARGIN', fetchTwseMargin, 'TWSE Margin'],
+    ['INST', fetchTwseInst, 'TWSE Inst'],
+  ]) {
+    try {
+      const item = await fn();
+      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[key] : null;
+      const prevHist = Array.isArray(old?.history) ? old.history : [];
+      const entry = key === 'MARGIN'
+        ? { date: item.date, v: item.price, chg: item.chg }
+        : { date: item.date, v: item.foreignYi, total: item.totalYi };
+      const filtered = prevHist.filter((h) => h.date !== item.date);
+      item.history = [...filtered, entry].slice(-30);
+      quotes[key] = item;
+    } catch (e) {
+      errors.push(`${label}: ${e.message}`);
+      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[key] : null;
+      if (old) quotes[key] = { ...old, stale: true };
+    }
+  }
 
   const data = { version: SCHEMA_VERSION, generatedAt: Date.now(), quotes, errors };
   await mkdir('site', { recursive: true });

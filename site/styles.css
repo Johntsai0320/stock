@@ -850,4 +850,35 @@ button { font: inherit; color: inherit; }
   line-height: 1.5;
 }
 
+/* ---------- Taiwan Chip Cards (Margin & Foreign Net) ---------- */
+.g-chip-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 640px) { .g-chip-grid { grid-template-columns: repeat(2, 1fr); } }
+.g-chip-card {
+  background: linear-gradient(165deg, var(--card-hi) 0%, var(--card) 60%);
+  border: 1px solid hsl(225 10% 19%);
+  border-radius: var(--radius);
+  padding: 13px 15px;
+  box-shadow: var(--shadow);
+}
+.g-chip-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0 4px;
+}
+.g-chip-main .g-reg-price { margin: 0; font-size: 1.3rem; }
+.g-chip-main .g-reg-price small { font-size: .78rem; font-weight: 500; color: var(--muted); }
+.g-chip-main .g-reg-price.up { color: var(--up); }
+.g-chip-main .g-reg-price.down { color: var(--down); }
+.g-chip-chg { font-size: .78rem; font-weight: 600; color: var(--muted); }
+.g-chip-chg.up { color: var(--up); }
+.g-chip-chg.down { color: var(--down); }
+.g-chip-sub { font-size: .72rem; color: var(--faint); line-height: 1.45; }
+
+
 
