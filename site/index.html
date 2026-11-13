@@ -22,6 +22,10 @@
         <p id="status-line" class="status-line"><span id="status-dot" class="dot"></span><span id="status-text">載入中…</span></p>
       </div>
       <div class="actions">
+        <nav class="view-switch" role="tablist" aria-label="頁面切換">
+          <button id="nav-market" class="vtab active" type="button" role="tab" aria-selected="true" data-view="market">即時看盤</button>
+          <button id="nav-gooaye" class="vtab" type="button" role="tab" aria-selected="false" data-view="gooaye">股癌選股邏輯</button>
+        </nav>
         <button id="btn-scheme" class="chip-btn" type="button" aria-label="切換漲跌配色" title="切換漲跌配色">
           <span class="sw sw-up"></span><span class="sw sw-down"></span><span id="scheme-label">台股配色</span>
         </button>
@@ -33,6 +37,7 @@
   </header>
 
   <main class="container">
+    <div id="view-market">
     <section class="highlight" aria-label="ADR 折溢價與匯率">
       <article id="adr-card" class="hl-card">
         <div class="hl-label">台積電 ADR 折溢價</div>
@@ -65,9 +70,55 @@
       <h2 id="g-us" class="group-title">美股 ADR / ETF</h2>
       <div class="grid" id="grid-us"></div>
     </section>
+    </div>
+
+    <div id="view-gooaye" hidden>
+      <section id="gooaye-live-signal" class="g-banner" aria-label="即時盤勢與股癌風控提示"></section>
+
+      <section class="group" aria-labelledby="g-pillars">
+        <h2 id="g-pillars" class="group-title">股癌選股邏輯六大支柱 <small>EP1–EP711 系統化提煉</small></h2>
+        <div id="gooaye-pillars" class="g-pillars"></div>
+      </section>
+
+      <section class="group" aria-labelledby="g-check">
+        <div class="g-sec-head">
+          <h2 id="g-check" class="group-title">實戰選股與持倉檢核表</h2>
+          <div class="g-check-meta">
+            <span id="gooaye-check-score" class="badge">0 / 6 通過</span>
+            <button id="gooaye-check-reset" class="chip-btn g-sm-btn" type="button">重設</button>
+          </div>
+        </div>
+        <div class="g-check-wrap">
+          <div class="g-ticker-row">
+            <input id="gooaye-ticker" class="g-input" type="text" placeholder="輸入評估標的（例：2330 台積電、CPO 族群…）" />
+          </div>
+          <div id="gooaye-checklist" class="g-checklist"></div>
+        </div>
+      </section>
+
+      <section class="group" aria-labelledby="g-eras">
+        <h2 id="g-eras" class="group-title">七大時期演進脈絡 <small>2020–2026（711 集）</small></h2>
+        <div id="gooaye-eras" class="g-eras"></div>
+      </section>
+
+      <section class="group" aria-labelledby="g-eps">
+        <div class="g-sec-head">
+          <h2 id="g-eps" class="group-title">全集數逐字稿索引 <small id="gooaye-ep-count">載入中…</small></h2>
+          <a class="g-ext-link" href="https://whatmkreallysaid.com/" target="_blank" rel="noopener noreferrer">whatmkreallysaid.com ↗</a>
+        </div>
+        <div class="g-controls">
+          <input id="gooaye-search" class="g-input" type="search" placeholder="搜尋集數、標題或關鍵字（例：50億、長鞭、宙斯、正二、EP703）" />
+          <div id="gooaye-filters" class="g-pills" role="tablist" aria-label="集數篩選"></div>
+        </div>
+        <div id="gooaye-ep-list" class="g-ep-list"></div>
+        <div id="gooaye-ep-more-wrap" class="g-more-wrap" hidden>
+          <button id="gooaye-ep-more" class="chip-btn" type="button">載入更多集數</button>
+        </div>
+      </section>
+    </div>
 
     <footer class="foot">
-      <p>資料來源：Yahoo Finance、CNN Business、臺灣證券交易所 MIS、臺灣期貨交易所 MIS。報價可能延遲，僅供參考，不構成投資建議。</p>
+      <p>資料來源：Yahoo Finance、CNN Business、臺灣證券交易所 MIS、臺灣期貨交易所 MIS、whatmkreallysaid.com（股癌非官方逐字稿）。報價可能延遲，僅供參考，不構成投資建議。</p>
       <p id="foot-meta"></p>
     </footer>
   </main>
@@ -104,5 +155,6 @@
   </section>
 
   <script src="app.js?v=11" defer></script>
+  <script src="gooaye.js?v=1" defer></script>
 </body>
 </html>

@@ -570,6 +570,8 @@
     renderStatus();
     if (state.openKey) updateSheet(false);
     saveCache();
+    window.__STOCKDASH_QUOTES__ = state.quotes;
+    window.dispatchEvent(new CustomEvent('stockdash:quotes', { detail: state.quotes }));
   }
 
   // ---------------- 技術指標 ----------------
