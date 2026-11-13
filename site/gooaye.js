@@ -292,6 +292,42 @@
     wrap.innerHTML = mHtml + iHtml;
   }
 
+  function renderChipHighlight(quotes) {
+    const mValEl = $('#hl-margin-value');
+    const mDetEl = $('#hl-margin-detail');
+    const iValEl = $('#hl-inst-value');
+    const iDetEl = $('#hl-inst-detail');
+    const margin = quotes.MARGIN;
+    const inst = quotes.INST;
+
+    if (mValEl && mDetEl) {
+      if (margin && typeof margin.price === 'number') {
+        const chg = typeof margin.chg === 'number' ? margin.chg : (margin.price - (margin.prevClose ?? margin.price));
+        const pctStr = margin.chgPct != null ? `（${margin.chgPct >= 0 ? '+' : ''}${margin.chgPct.toFixed(2)}%）` : '';
+        mValEl.textContent = fmtYi(chg);
+        mValEl.className = `hl-value num ${chg > 0 ? 'up' : chg < 0 ? 'down' : ''}`;
+        mDetEl.textContent = `餘額 ${margin.price.toLocaleString('en-US', { minimumFractionDigits: 2 })} 億${pctStr}${margin.date ? ' · ' + fmtDateTW(margin.date).slice(5) : ''}`;
+      } else {
+        mValEl.textContent = '—';
+        mValEl.className = 'hl-value';
+        mDetEl.textContent = '待盤後公布';
+      }
+    }
+
+    if (iValEl && iDetEl) {
+      if (inst && typeof inst.foreignYi === 'number') {
+        const f = inst.foreignYi;
+        iValEl.textContent = fmtYi(f);
+        iValEl.className = `hl-value num ${f > 0 ? 'up' : f < 0 ? 'down' : ''}`;
+        iDetEl.textContent = `三大合計 ${fmtYi(inst.totalYi)} · 投信 ${fmtYi(inst.trustYi)}`;
+      } else {
+        iValEl.textContent = '—';
+        iValEl.className = 'hl-value';
+        iDetEl.textContent = '待盤後公布';
+      }
+    }
+  }
+
   function renderRegimeSection(quotes) {
     renderRegimeGrid(quotes);
     renderChipCards('#gooaye-chip-grid', quotes);
@@ -605,12 +641,14 @@
 
     window.addEventListener('stockdash:quotes', (e) => {
       const q = e.detail || {};
+      renderChipHighlight(q);
       renderChipCards('#grid-twchip', q);
       if (gState.view === 'gooaye') {
         renderRegimeSection(q);
       }
     });
     if (window.__STOCKDASH_QUOTES__) {
+      renderChipHighlight(window.__STOCKDASH_QUOTES__);
       renderChipCards('#grid-twchip', window.__STOCKDASH_QUOTES__);
     }
 
