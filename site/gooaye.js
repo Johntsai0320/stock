@@ -42,7 +42,7 @@
   }
 
   function epUrl(n) {
-    return `https://whatmkreallysaid.com/episode.html?file=EP${n}`;
+    return `https://whatmkreallysaid.com/episodes_static/ep${n}`;
   }
 
   // ---------------- 大盤位階技術計算 ----------------
