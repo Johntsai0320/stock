@@ -15,13 +15,14 @@
   const LIVE_INTERVAL = 15_000;     // 每 15 秒嘗試抓取即時報價
 
   const ORDER = {
-    tw: ['TWII', '2330', '0050'],
+    tw: ['TWII', 'TPEX', '2330', '0050'],
     fut: ['TXF_D', 'TXF_N'],
     usidx: ['DJI', 'GSPC', 'IXIC', 'SOX', 'FGI', 'VIX'],
     us: ['TSM', 'VT', 'QQQM'],
   };
   const META = {
     TWII: { name: '台灣加權指數', symbol: '^TWII', y: '^TWII', tz: 'Asia/Taipei' },
+    TPEX: { name: '台灣櫃買指數', symbol: 'TPEx', y: 'IX0043.TWO', tz: 'Asia/Taipei' },
     2330: { name: '台積電', symbol: '2330.TW', y: '2330.TW', tz: 'Asia/Taipei' },
     '0050': { name: '元大台灣50', symbol: '0050.TW', y: '0050.TW', tz: 'Asia/Taipei' },
     TXF_D: { name: '台指期（日盤）', symbol: 'TXF', tz: 'Asia/Taipei' },
@@ -299,14 +300,15 @@
     return isNum(b1) ? b1 : isNum(a1) ? a1 : null;
   }
 
-  // 證交所 MIS 即時行情（加權指數、台積電、0050）
+  // 證交所 MIS 即時行情（加權指數、櫃買指數、台積電、0050）
   async function loadTwseLive() {
-    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|tse_2330.tw|tse_0050.tw&json=1&delay=0&_=${Date.now()}`;
+    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|otc_o00.tw|tse_2330.tw|tse_0050.tw&json=1&delay=0&_=${Date.now()}`;
     const j = await viaProxy(url, {}, (x) => Array.isArray(x?.msgArray) && x.msgArray.length > 0);
     let changed = false;
     for (const it of j.msgArray) {
       let key = null;
       if (it.c === 't00') key = 'TWII';
+      else if (it.c === 'o00') key = 'TPEX';
       else if (it.c === '2330') key = '2330';
       else if (it.c === '0050') key = '0050';
       if (!key) continue;

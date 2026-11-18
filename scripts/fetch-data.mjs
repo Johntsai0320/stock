@@ -11,6 +11,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // key, Yahoo symbol, 顯示名稱, 分組, TWSE MIS 代碼
 export const SYMBOLS = [
   { key: 'TWII', y: '^TWII', name: '台灣加權指數', group: 'tw', mis: 'tse_t00.tw' },
+  { key: 'TPEX', y: 'IX0043.TWO', name: '台灣櫃買指數', group: 'tw', mis: 'otc_o00.tw' },
   { key: '2330', y: '2330.TW', name: '台積電', group: 'tw', mis: 'tse_2330.tw' },
   { key: '0050', y: '0050.TW', name: '元大台灣50', group: 'tw', mis: 'tse_0050.tw' },
   { key: 'DJI', y: '^DJI', name: '道瓊工業', group: 'usidx' },
@@ -163,6 +164,58 @@ async function fetchTwseMis() {
     };
   }
   return out;
+}
+
+// ---------- 櫃買指數兩年日 K（Yahoo IX0043.TWO 日線僅 1 筆，改用 FinMind + 櫃買中心 OpenAPI）----------
+function twDateStr(ms) {
+  return new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
+}
+
+function twDayTs(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return Date.UTC(y, m - 1, d, 5, 30, 0); // 13:30 Asia/Taipei
+}
+
+async function fetchTpexDaily(prevDaily = []) {
+  const byDate = new Map();
+  if (Array.isArray(prevDaily)) {
+    for (const r of prevDaily) {
+      if (Array.isArray(r) && r.length >= 5 && Number.isFinite(r[0]) && Number.isFinite(r[4])) {
+        byDate.set(twDateStr(r[0]), r);
+      }
+    }
+  }
+
+  const startDate = new Date(Date.now() - 750 * 86400000).toISOString().slice(0, 10);
+  const [fmRes, tpexRes] = await Promise.allSettled([
+    fetchJSON(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=TPEx&start_date=${startDate}`, {}, 2),
+    fetchJSON('https://www.tpex.org.tw/openapi/v1/tpex_index', { headers: { Referer: 'https://www.tpex.org.tw/' } }, 2),
+  ]);
+
+  if (fmRes.status === 'fulfilled' && Array.isArray(fmRes.value?.data)) {
+    for (const row of fmRes.value.data) {
+      const o = num(row.open), h = num(row.max), l = num(row.min), c = num(row.close);
+      if (!row.date || o == null || h == null || l == null || c == null) continue;
+      byDate.set(row.date, [twDayTs(row.date), +o.toFixed(4), +h.toFixed(4), +l.toFixed(4), +c.toFixed(4), num(row.Trading_Volume) ?? 0]);
+    }
+  }
+
+  if (tpexRes.status === 'fulfilled' && Array.isArray(tpexRes.value)) {
+    for (const row of tpexRes.value) {
+      const rawDate = String(row.Date || '').trim();
+      if (!/^\d{8}$/.test(rawDate)) continue;
+      const dateStr = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+      const o = num(row.Open), h = num(row.High), l = num(row.Low), c = num(row.Close);
+      if (o == null || h == null || l == null || c == null) continue;
+      const existing = byDate.get(dateStr);
+      byDate.set(dateStr, [twDayTs(dateStr), +o.toFixed(4), +h.toFixed(4), +l.toFixed(4), +c.toFixed(4), existing?.[5] ?? 0]);
+    }
+  }
+
+  return [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-520)
+    .map(([, bar]) => bar);
 }
 
 // ---------- TAIFEX MIS 台指期 ----------
@@ -370,6 +423,23 @@ async function main() {
     }
   });
 
+  // 櫃買指數兩年日 K（FinMind + 櫃買中心 OpenAPI）
+  try {
+    const oldTpex = prev?.version === SCHEMA_VERSION ? prev.quotes?.TPEX : null;
+    if (!quotes.TPEX) {
+      quotes.TPEX = {
+        key: 'TPEX', name: '台灣櫃買指數', symbol: 'IX0043.TWO', group: 'tw',
+        currency: 'TWD', price: null, prevClose: null, open: null, high: null, low: null,
+        volume: null, time: 0, session: null, tz: 'Asia/Taipei', source: 'FinMind',
+        intraday: [], daily: [],
+      };
+    }
+    const tpexDaily = await fetchTpexDaily(oldTpex?.daily);
+    if (tpexDaily.length) quotes.TPEX.daily = tpexDaily;
+  } catch (e) {
+    errors.push(`TPEX daily: ${e.message}`);
+  }
+
   // CNN 恐慌貪婪指數
   try {
     quotes.FGI = await fetchCnnFearGreed();
@@ -387,21 +457,31 @@ async function main() {
       if (!q) continue;
       if (v.prevClose != null) q.prevClose = v.prevClose;
       if (v.price != null) {
+        const vDate = v.time ? twDateStr(v.time) : null;
+        const qDate = q.time ? twDateStr(q.time) : null;
+        const sameDay = !vDate || !qDate || vDate === qDate;
         q.price = v.price;
         if (v.open != null) q.open = v.open;
-        if (v.high != null) q.high = Math.max(q.high ?? -Infinity, v.high, v.price);
-        if (v.low != null) q.low = Math.min(q.low ?? Infinity, v.low, v.price);
+        if (v.high != null) q.high = sameDay ? Math.max(q.high ?? -Infinity, v.high, v.price) : Math.max(v.high, v.price);
+        if (v.low != null) q.low = sameDay ? Math.min(q.low ?? Infinity, v.low, v.price) : Math.min(v.low, v.price);
         if (v.volume != null) q.volume = v.volume;
         if (v.time != null) q.time = v.time;
         q.source = '證交所 MIS';
         q.stale = false;
-        if (Array.isArray(q.intraday)) {
-          const lastPt = q.intraday[q.intraday.length - 1];
-          if (!lastPt || lastPt[0] < v.time) {
-            q.intraday.push([v.time, v.price]);
-          } else if (lastPt && lastPt[0] === v.time) {
-            lastPt[1] = v.price;
+        if (Array.isArray(q.intraday) && v.time) {
+          const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[k] : null;
+          const sameDayYahoo = q.intraday.filter((p) => Array.isArray(p) && p[1] != null && (!vDate || twDateStr(p[0]) === vDate));
+          const yLast = sameDayYahoo.length ? sameDayYahoo[sameDayYahoo.length - 1][0] : 0;
+          const mergedMap = new Map(sameDayYahoo.map((p) => [p[0], p]));
+          if (Array.isArray(old?.intraday)) {
+            for (const p of old.intraday) {
+              if (Array.isArray(p) && p[1] != null && (!vDate || twDateStr(p[0]) === vDate) && p[0] > yLast) {
+                mergedMap.set(p[0], p);
+              }
+            }
           }
+          mergedMap.set(v.time, [v.time, v.price]);
+          q.intraday = [...mergedMap.values()].sort((a, b) => a[0] - b[0]);
         }
       }
     }

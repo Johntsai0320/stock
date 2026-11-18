@@ -83,7 +83,7 @@ button { font: inherit; color: inherit; }
 .group-title small { font-weight: 400; letter-spacing: .04em; color: var(--faint); margin-left: 6px; text-transform: none; }
 .grid { display: grid; gap: 10px; grid-template-columns: 1fr; }
 @media (min-width: 560px) { .grid { grid-template-columns: repeat(2, 1fr); } }
-@media (min-width: 900px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 900px) { .grid { grid-template-columns: repeat(3, 1fr); } #grid-tw { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 1100px) { #grid-usidx { grid-template-columns: repeat(3, 1fr); } }
 
 /* ---------- Highlight strip ---------- */
@@ -435,8 +435,8 @@ button { font: inherit; color: inherit; }
   .stats { grid-template-columns: repeat(8, 1fr); }
 }
 @media (min-width: 1280px) {
-  #grid-tw, #grid-us { grid-template-columns: repeat(3, 1fr); }
-  #grid-fut { grid-template-columns: repeat(2, 1fr); }
+  #grid-us { grid-template-columns: repeat(3, 1fr); }
+  #grid-tw, #grid-fut { grid-template-columns: repeat(2, 1fr); }
   #grid-tw .price, #grid-fut .price, #grid-us .price { font-size: 1.9rem; }
 }
 /* 極窄手機（≤360px）：縮小走勢圖避免擠壓 */
