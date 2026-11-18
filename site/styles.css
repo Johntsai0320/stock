@@ -93,9 +93,14 @@ button { font: inherit; color: inherit; }
   border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
   min-width: 0;
 }
+#futoi-hl-card { grid-column: 1 / -1; }
 #fx-card { cursor: pointer; }
 .hl-label { font-size: .74rem; color: var(--muted); letter-spacing: .03em; }
 .hl-value { font-size: clamp(1.35rem, 6vw, 1.8rem); font-weight: 700; letter-spacing: -.01em; margin-top: 4px; }
+.hl-value-split { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.hl-sub-chg { font-size: .82rem; font-weight: 600; white-space: nowrap; }
+.hl-sub-chg.up { color: var(--up); }
+.hl-sub-chg.down { color: var(--down); }
 .hl-detail { font-size: .72rem; color: var(--faint); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- Quote card ---------- */
@@ -856,7 +861,14 @@ button { font: inherit; color: inherit; }
   gap: 10px;
   grid-template-columns: 1fr;
 }
-@media (min-width: 640px) { .g-chip-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 640px) {
+  .g-chip-grid { grid-template-columns: repeat(2, 1fr); }
+  .g-chip-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+@media (min-width: 960px) {
+  .g-chip-grid { grid-template-columns: repeat(3, 1fr); }
+  .g-chip-grid > :last-child:nth-child(odd) { grid-column: auto; }
+}
 .g-chip-card {
   background: linear-gradient(165deg, var(--card-hi) 0%, var(--card) 60%);
   border: 1px solid hsl(225 10% 19%);

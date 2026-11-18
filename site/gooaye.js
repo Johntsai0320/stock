@@ -151,6 +151,12 @@
     return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)} 億`;
   }
 
+  function fmtContracts(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    const sign = v > 0 ? '+' : v < 0 ? '−' : '';
+    return `${sign}${Math.abs(Math.round(v)).toLocaleString('en-US')} 口`;
+  }
+
   function fmtDateTW(d) {
     if (!d || d.length !== 8) return '';
     return `${d.slice(0, 4)}/${d.slice(4, 6)}/${d.slice(6, 8)}`;
@@ -159,6 +165,7 @@
   function analyzeChips(quotes, tw) {
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
+    const futOi = quotes.FUT_OI;
     const twiiQ = quotes.TWII;
     const twDayDown = twiiQ && typeof twiiQ.price === 'number' && typeof twiiQ.prevClose === 'number'
       ? twiiQ.price < twiiQ.prevClose
@@ -230,7 +237,22 @@
       }
     }
 
-    return { marginSignal, instSignal };
+    let futOiSignal = { label: '尚無期貨未平倉', cls: 'neutral', hint: '' };
+    if (futOi && typeof futOi.price === 'number') {
+      const net = futOi.price;
+      const chg = typeof futOi.chg === 'number' ? futOi.chg : (net - (futOi.prevClose ?? net));
+      if (net >= 5000) {
+        futOiSignal = { label: '淨多單偏多', cls: 'bull', hint: `外資台指期淨口數 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）。` };
+      } else if (net <= -35000) {
+        futOiSignal = { label: '高空單避險', cls: 'bear', hint: `外資台指期淨口數 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）。` };
+      } else if (net < 0) {
+        futOiSignal = { label: '淨空單', cls: 'warn', hint: `外資台指期淨口數 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）。` };
+      } else {
+        futOiSignal = { label: '淨多單', cls: 'neutral', hint: `外資台指期淨口數 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）。` };
+      }
+    }
+
+    return { marginSignal, instSignal, futOiSignal };
   }
 
   function renderChipCards(selector, quotes) {
@@ -238,8 +260,9 @@
     if (!wrap) return;
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
+    const futOi = quotes.FUT_OI;
     const tw = calcIndexMetrics(quotes.TWII);
-    const { marginSignal, instSignal } = analyzeChips(quotes, tw);
+    const { marginSignal, instSignal, futOiSignal } = analyzeChips(quotes, tw);
 
     const mHtml = margin && typeof margin.price === 'number' ? (() => {
       const chg = typeof margin.chg === 'number' ? margin.chg : (margin.price - (margin.prevClose ?? margin.price));
@@ -289,7 +312,35 @@
       </article>
     `;
 
-    wrap.innerHTML = mHtml + iHtml;
+    const fHtml = futOi && typeof futOi.price === 'number' ? (() => {
+      const net = futOi.price;
+      const chg = typeof futOi.chg === 'number' ? futOi.chg : (net - (futOi.prevClose ?? net));
+      const netCls = net > 0 ? 'up' : net < 0 ? 'down' : '';
+      const chgCls = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+      const longStr = futOi.longOI != null ? futOi.longOI.toLocaleString('en-US') : '—';
+      const shortStr = futOi.shortOI != null ? futOi.shortOI.toLocaleString('en-US') : '—';
+      const trustTxt = typeof futOi.trustNetOI === 'number' ? ` · 投信 ${fmtContracts(futOi.trustNetOI)}` : '';
+      return `
+        <article class="g-chip-card">
+          <div class="g-reg-top">
+            <strong>外資期貨多空口數淨額 <small class="muted">${esc(fmtDateTW(futOi.date))}</small></strong>
+            <span class="g-reg-badge st-${futOiSignal.cls}">${esc(futOiSignal.label)}</span>
+          </div>
+          <div class="g-chip-main">
+            <span class="g-reg-price num ${netCls}">${fmtContracts(net)}</span>
+            <span class="g-chip-chg num ${chgCls}">單日 ${fmtContracts(chg)}</span>
+          </div>
+          <div class="g-chip-sub">多單 ${longStr} · 空單 ${shortStr} 口${trustTxt} · ${esc(futOi.source || '期交所')}${futOi.stale ? '（盤中沿用前日）' : ''}</div>
+        </article>
+      `;
+    })() : `
+      <article class="g-chip-card">
+        <div class="g-reg-top"><strong>外資期貨多空口數淨額</strong><span class="badge">待盤後更新</span></div>
+        <div class="g-reg-price">—</div>
+      </article>
+    `;
+
+    wrap.innerHTML = mHtml + iHtml + fHtml;
   }
 
   function renderChipHighlight(quotes) {
@@ -297,8 +348,11 @@
     const mDetEl = $('#hl-margin-detail');
     const iValEl = $('#hl-inst-value');
     const iDetEl = $('#hl-inst-detail');
+    const fValEl = $('#hl-futoi-value');
+    const fDetEl = $('#hl-futoi-detail');
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
+    const futOi = quotes.FUT_OI;
 
     if (mValEl && mDetEl) {
       if (margin && typeof margin.price === 'number') {
@@ -324,6 +378,24 @@
         iValEl.textContent = '—';
         iValEl.className = 'hl-value';
         iDetEl.textContent = '待盤後公布';
+      }
+    }
+
+    if (fValEl && fDetEl) {
+      if (futOi && typeof futOi.price === 'number') {
+        const net = futOi.price;
+        const chg = typeof futOi.chg === 'number' ? futOi.chg : (net - (futOi.prevClose ?? net));
+        const netCls = net > 0 ? 'up' : net < 0 ? 'down' : '';
+        const chgCls = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+        fValEl.className = 'hl-value hl-value-split num';
+        fValEl.innerHTML = `<span class="${netCls}">${fmtContracts(net)}</span><span class="hl-sub-chg ${chgCls}">單日 ${fmtContracts(chg)}</span>`;
+        const longStr = futOi.longOI != null ? futOi.longOI.toLocaleString('en-US') : '—';
+        const shortStr = futOi.shortOI != null ? futOi.shortOI.toLocaleString('en-US') : '—';
+        fDetEl.textContent = `多 ${longStr} · 空 ${shortStr}${futOi.date ? ' · ' + fmtDateTW(futOi.date).slice(5) : ''}`;
+      } else {
+        fValEl.textContent = '—';
+        fValEl.className = 'hl-value';
+        fDetEl.textContent = '待盤後公布';
       }
     }
   }

@@ -399,6 +399,108 @@ async function fetchTwseInst() {
   };
 }
 
+// ---------- 期交所：三大法人台指期（外資期貨多空未平倉口數淨額 & 單日增減）----------
+async function fetchTaifexForeignOi() {
+  const byDate = new Map();
+  let sourceLabel = '期交所';
+
+  try {
+    const startFmt = twDateStr(Date.now() - 25 * 86400000).replace(/-/g, '/');
+    const endFmt = twDateStr(Date.now()).replace(/-/g, '/');
+    const res = await fetch('https://www.taifex.com.tw/cht/3/futContractsDateDown', {
+      method: 'POST',
+      headers: {
+        'User-Agent': UA,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Referer: 'https://www.taifex.com.tw/cht/3/futContractsDate',
+      },
+      body: `queryStartDate=${startFmt}&queryEndDate=${endFmt}&commodityId=TXF`,
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const txt = new TextDecoder('big5').decode(await res.arrayBuffer());
+    const lines = txt.trim().split(/\r?\n/);
+    for (const line of lines.slice(1)) {
+      const cols = line.split(',').map((s) => s.trim());
+      if (cols.length < 14 || !/^\d{4}\/\d{2}\/\d{2}$/.test(cols[0])) continue;
+      const date = cols[0].replace(/\//g, '');
+      const role = cols[2];
+      const longOI = num(cols[9]);
+      const shortOI = num(cols[11]);
+      const netOI = num(cols[13]);
+      if (longOI == null || shortOI == null || netOI == null) continue;
+      if (!byDate.has(date)) byDate.set(date, {});
+      const d = byDate.get(date);
+      if (role.includes('外資')) d.foreign = { longOI, shortOI, netOI };
+      else if (role.includes('投信')) d.trust = { longOI, shortOI, netOI };
+      else if (role.includes('自營')) d.dealer = { longOI, shortOI, netOI };
+    }
+  } catch {
+    byDate.clear();
+  }
+
+  // Fallback: FinMind TaiwanFuturesInstitutionalInvestors (TX)
+  if (byDate.size < 2) {
+    const start = twDateStr(Date.now() - 25 * 86400000);
+    const fm = await fetchJSON(
+      `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TX&start_date=${start}`,
+      {},
+      2
+    );
+    if (Array.isArray(fm?.data)) {
+      byDate.clear();
+      for (const row of fm.data) {
+        const date = String(row.date || '').replace(/-/g, '');
+        if (!/^\d{8}$/.test(date)) continue;
+        const longOI = num(row.long_open_interest_balance_volume);
+        const shortOI = num(row.short_open_interest_balance_volume);
+        if (longOI == null || shortOI == null) continue;
+        const netOI = longOI - shortOI;
+        if (!byDate.has(date)) byDate.set(date, {});
+        const d = byDate.get(date);
+        const role = String(row.institutional_investors || '');
+        if (role.includes('外資')) d.foreign = { longOI, shortOI, netOI };
+        else if (role.includes('投信')) d.trust = { longOI, shortOI, netOI };
+        else if (role.includes('自營')) d.dealer = { longOI, shortOI, netOI };
+      }
+      sourceLabel = 'FinMind / 期交所';
+    }
+  }
+
+  const dates = [...byDate.keys()]
+    .filter((d) => byDate.get(d)?.foreign)
+    .sort();
+  if (!dates.length) throw new Error('TAIFEX Foreign OI: no data');
+
+  const latestDate = dates[dates.length - 1];
+  const latest = byDate.get(latestDate);
+  const prevDate = dates.length >= 2 ? dates[dates.length - 2] : null;
+  const prevDay = prevDate ? byDate.get(prevDate) : null;
+
+  const netOI = latest.foreign.netOI;
+  const prevNetOI = prevDay ? prevDay.foreign.netOI : netOI;
+  const chg = prevDay ? netOI - prevNetOI : 0;
+
+  return {
+    key: 'FUT_OI',
+    name: '外資期貨多空口數淨額',
+    symbol: 'TAIFEX TXF Foreign OI',
+    group: 'twchip',
+    currency: '口',
+    price: netOI,
+    prevClose: prevNetOI,
+    chg,
+    longOI: latest.foreign.longOI,
+    shortOI: latest.foreign.shortOI,
+    trustNetOI: latest.trust?.netOI ?? null,
+    dealerNetOI: latest.dealer?.netOI ?? null,
+    date: latestDate,
+    time: Date.now(),
+    tz: 'Asia/Taipei',
+    source: sourceLabel,
+  };
+}
+
 async function loadPrevious() {
   try {
     return await fetchJSON(`${SITE_URL.replace(/\/?$/, '/')}data.json?_=${Date.now()}`, {}, 1);
@@ -509,10 +611,11 @@ async function main() {
   }
 
 
-  // 證交所融資餘額 & 外資買賣超（盤後更新；盤中若尚未公布則沿用前一交易日快照）
+  // 證交所融資餘額、外資買賣超 & 期交所外資期貨多空淨口數（盤後更新；盤中沿用前一交易日快照）
   for (const [key, fn, label] of [
     ['MARGIN', fetchTwseMargin, 'TWSE Margin'],
     ['INST', fetchTwseInst, 'TWSE Inst'],
+    ['FUT_OI', fetchTaifexForeignOi, 'TAIFEX Foreign OI'],
   ]) {
     try {
       const item = await fn();
@@ -520,7 +623,9 @@ async function main() {
       const prevHist = Array.isArray(old?.history) ? old.history : [];
       const entry = key === 'MARGIN'
         ? { date: item.date, v: item.price, chg: item.chg }
-        : { date: item.date, v: item.foreignYi, total: item.totalYi };
+        : key === 'INST'
+        ? { date: item.date, v: item.foreignYi, total: item.totalYi }
+        : { date: item.date, net: item.price, chg: item.chg, longOI: item.longOI, shortOI: item.shortOI };
       const filtered = prevHist.filter((h) => h.date !== item.date);
       item.history = [...filtered, entry].slice(-30);
       quotes[key] = item;
