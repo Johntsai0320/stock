@@ -367,14 +367,21 @@ async function fetchTwseInst() {
   if (j?.stat !== 'OK' || !Array.isArray(j.data)) {
     throw new Error(`TWSE BFI82U stat=${j?.stat || 'unknown'}`);
   }
-  const byName = (kw) => {
-    const row = j.data.find((r) => String(r[0]).includes(kw));
-    return row ? num(row[3]) : 0;
+  const byExact = (name) => {
+    const row = j.data.find((r) => String(r[0]).trim() === name);
+    return row ? num(row[3]) : null;
   };
-  const foreignNet = (byName('外資及陸資') ?? 0) + (byName('外資自營商') ?? 0);
-  const trustNet = byName('投信') ?? 0;
-  const dealerNet = (byName('自營商(自行買賣)') ?? 0) + (byName('自營商(避險)') ?? 0);
-  const totalNet = byName('合計') ?? (foreignNet + trustNet + dealerNet);
+  const byPrefix = (prefix) => {
+    const row = j.data.find((r) => String(r[0]).trim().startsWith(prefix));
+    return row ? num(row[3]) : null;
+  };
+  // 證交所 BFI82U「外資及陸資(不含外資自營商)」名稱內含「外資自營商」字樣，不可用 includes('外資自營商')；
+  // 且依證交所說明，外資自營商已計入自營商，故外資買賣超取「外資及陸資(不含外資自營商)」與三大法人合計一致
+  const foreignNet = byPrefix('外資及陸資') ?? 0;
+  const trustNet = byExact('投信') ?? byPrefix('投信') ?? 0;
+  const dealerNet = (byExact('自營商(自行買賣)') ?? byPrefix('自營商(自行買賣)') ?? 0)
+    + (byExact('自營商(避險)') ?? byPrefix('自營商(避險)') ?? 0);
+  const totalNet = byExact('合計') ?? (foreignNet + trustNet + dealerNet);
   const toYi = (v) => +(v / 1e8).toFixed(2);
   const foreignYi = toYi(foreignNet);
   const trustYi = toYi(trustNet);
@@ -624,9 +631,9 @@ async function main() {
       const entry = key === 'MARGIN'
         ? { date: item.date, v: item.price, chg: item.chg }
         : key === 'INST'
-        ? { date: item.date, v: item.foreignYi, total: item.totalYi }
+        ? { date: item.date, v: item.foreignYi, total: item.totalYi, exact: true }
         : { date: item.date, net: item.price, chg: item.chg, longOI: item.longOI, shortOI: item.shortOI };
-      const filtered = prevHist.filter((h) => h.date !== item.date);
+      const filtered = prevHist.filter((h) => h.date !== item.date && (key !== 'INST' || h.exact));
       item.history = [...filtered, entry].slice(-30);
       quotes[key] = item;
     } catch (e) {
