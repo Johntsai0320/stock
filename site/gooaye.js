@@ -46,13 +46,53 @@
   }
 
   // ---------------- 大盤位階技術計算 ----------------
-  function calcIndexMetrics(q) {
-    if (!q || !Array.isArray(q.daily) || q.daily.length < 20) return null;
-    const closes = q.daily.map((b) => Number(b[4])).filter((v) => Number.isFinite(v));
-    if (!closes.length) return null;
+  const INDEX_TZ = {
+    TWII: 'Asia/Taipei',
+    TPEX: 'Asia/Taipei',
+    GSPC: 'America/New_York',
+    IXIC: 'America/New_York',
+    SOX: 'America/New_York',
+  };
 
-    const price = typeof q.price === 'number' && Number.isFinite(q.price) ? q.price : closes[closes.length - 1];
-    closes[closes.length - 1] = price;
+  function dateInTz(ms, tz) {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+  }
+
+  function calcIndexMetrics(q, key) {
+    if (!q || !Array.isArray(q.daily) || q.daily.length < 20) return null;
+    const tz = q.tz || INDEX_TZ[key || q.key] || 'UTC';
+    const byDate = new Map();
+    for (const b of q.daily) {
+      if (!Array.isArray(b) || b.length < 5) continue;
+      const c = Number(b[4]);
+      if (!Number.isFinite(c) || !Number.isFinite(b[0])) continue;
+      const date = dateInTz(b[0], tz);
+      byDate.set(date, {
+        date,
+        h: Number.isFinite(Number(b[2])) ? Number(b[2]) : c,
+        l: Number.isFinite(Number(b[3])) ? Number(b[3]) : c,
+        c,
+      });
+    }
+    const rows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    if (!rows.length) return null;
+
+    const price = typeof q.price === 'number' && Number.isFinite(q.price) ? q.price : rows[rows.length - 1].c;
+    if (typeof q.price === 'number' && Number.isFinite(q.price) && q.time) {
+      const today = dateInTz(q.time, tz);
+      const last = rows[rows.length - 1];
+      const hi = typeof q.high === 'number' && Number.isFinite(q.high) ? q.high : price;
+      const lo = typeof q.low === 'number' && Number.isFinite(q.low) ? q.low : price;
+      if (last.date === today) {
+        last.c = price;
+        last.h = Math.max(last.h, price, hi);
+        last.l = Math.min(last.l, price, lo);
+      } else if (today > last.date) {
+        rows.push({ date: today, h: Math.max(price, hi), l: Math.min(price, lo), c: price });
+      }
+    }
+
+    const closes = rows.map((r) => r.c);
 
     const avg = (n) => {
       if (closes.length < n) return null;
@@ -65,14 +105,12 @@
     const ma60 = avg(60);
     const ma240 = avg(240);
 
-    const win52 = q.daily.slice(-252);
+    const win52 = rows.slice(-252);
     let hi52 = price;
     let lo52 = price;
-    for (const b of win52) {
-      const h = Number(b[2]);
-      const l = Number(b[3]);
-      if (Number.isFinite(h) && h > hi52) hi52 = h;
-      if (Number.isFinite(l) && l < lo52) lo52 = l;
+    for (const r of win52) {
+      if (r.h > hi52) hi52 = r.h;
+      if (r.l < lo52) lo52 = r.l;
     }
     const pct52 = hi52 > lo52 ? Math.max(0, Math.min(100, ((price - lo52) / (hi52 - lo52)) * 100)) : 50;
 
@@ -373,7 +411,7 @@
         const f = inst.foreignYi;
         iValEl.textContent = fmtYi(f);
         iValEl.className = `hl-value num ${f > 0 ? 'up' : f < 0 ? 'down' : ''}`;
-        iDetEl.textContent = `三大合計 ${fmtYi(inst.totalYi)} · 投信 ${fmtYi(inst.trustYi)}`;
+        iDetEl.textContent = `合計 ${fmtYi(inst.totalYi)} · 投信 ${fmtYi(inst.trustYi)}${inst.date ? ' · ' + fmtDateTW(inst.date).slice(5) : ''}`;
       } else {
         iValEl.textContent = '—';
         iValEl.className = 'hl-value';

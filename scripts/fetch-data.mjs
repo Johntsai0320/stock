@@ -2,11 +2,12 @@
 // 資料來源：Yahoo Finance (chart / spark)、期交所 MIS、證交所 MIS（若可連線）
 // Node 20+（內建 fetch）
 
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, readFile, mkdir } from 'node:fs/promises';
 
 const SCHEMA_VERSION = 3;
 const SITE_URL = process.env.SITE_URL || 'https://johntsai0320.github.io/stock/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
+const PRICE_INDEX_KEYS = new Set(['TWII', 'DJI', 'GSPC', 'IXIC', 'SOX', 'VIX']);
 
 // key, Yahoo symbol, 顯示名稱, 分組, TWSE MIS 代碼
 export const SYMBOLS = [
@@ -31,6 +32,15 @@ const num = (v) => {
   const n = Number(String(v).replace(/,/g, ''));
   return Number.isFinite(n) ? n : null;
 };
+
+function dateInTz(ms, tz = 'UTC') {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+}
+
+function rocToIso(roc) {
+  const m = String(roc || '').trim().match(/^(\d{2,3})\/(\d{2})\/(\d{2})$/);
+  return m ? `${+m[1] + 1911}-${m[2]}-${m[3]}` : null;
+}
 
 async function fetchJSON(url, opts = {}, tries = 3) {
   let err;
@@ -99,14 +109,39 @@ async function fetchYahoo(def) {
     yahooChart(def.y, '2y', '1d').catch(() => yahooChart(def.y, '1y', '1d')).catch(() => null),
   ]);
   const m = intra.meta;
+  const tz = m.exchangeTimezoneName || 'UTC';
+  const dailyBars = daily ? parseDaily(daily) : [];
+  const regTimeMs = (m.regularMarketTime || 0) * 1000;
+  const regDate = regTimeMs ? dateInTz(regTimeMs, tz) : null;
+
   // 昨收：range=1d 時 previousClose / chartPreviousClose 皆為「前一交易日收盤」
-  // （注意：長區間的 chartPreviousClose 是區間起點前的收盤，不可拿來當昨收）
-  const prevClose = num(m.previousClose) ?? num(m.chartPreviousClose);
+  // 注意：Yahoo 對 ^TWII 偶爾回傳過期 previousClose、對 ^DJI 會四捨五入到 1 位小數；純價格指數可用日線前一日收盤精確校準
+  let prevClose = num(m.previousClose) ?? num(m.chartPreviousClose);
+  if (PRICE_INDEX_KEYS.has(def.key) && regDate && dailyBars.length) {
+    let prevBar = null;
+    for (let i = dailyBars.length - 1; i >= 0; i--) {
+      if (dateInTz(dailyBars[i][0], tz) < regDate) { prevBar = dailyBars[i]; break; }
+    }
+    if (prevBar && prevBar[4] > 0) {
+      const dailyPrev = +prevBar[4].toFixed(2);
+      if (def.key === 'TWII' || prevClose == null || Math.abs(dailyPrev - prevClose) <= Math.max(0.5, prevClose * 0.0001)) {
+        prevClose = dailyPrev;
+      }
+    }
+  }
+
   const intraday = parseIntraday(intra);
   const quotes = intra.indicators?.quote?.[0] || {};
   const highs = (quotes.high || []).filter((v) => v != null);
   const lows = (quotes.low || []).filter((v) => v != null);
   const opens = (quotes.open || []).filter((v) => v != null);
+
+  // 開盤價優先採用當日日線官方開盤價（避免 ^IXIC / 美股首根 1 分 K 與開盤集合競價落差）
+  const todayDaily = regDate ? dailyBars.find((b) => dateInTz(b[0], tz) === regDate) : null;
+  const open = todayDaily && todayDaily[1] > 0
+    ? +todayDaily[1].toFixed(4)
+    : (opens.length ? +opens[0].toFixed(4) : null);
+
   return {
     key: def.key,
     name: def.name,
@@ -115,22 +150,22 @@ async function fetchYahoo(def) {
     currency: m.currency,
     price: num(m.regularMarketPrice),
     prevClose,
-    open: opens[0] ?? null,
-    high: num(m.regularMarketDayHigh) ?? (highs.length ? Math.max(...highs) : null),
-    low: num(m.regularMarketDayLow) ?? (lows.length ? Math.min(...lows) : null),
+    open,
+    high: num(m.regularMarketDayHigh) ?? (highs.length ? +Math.max(...highs).toFixed(4) : null),
+    low: num(m.regularMarketDayLow) ?? (lows.length ? +Math.min(...lows).toFixed(4) : null),
     volume: num(m.regularMarketVolume),
-    time: (m.regularMarketTime || 0) * 1000,
+    time: regTimeMs,
     session: m.currentTradingPeriod?.regular
       ? { start: m.currentTradingPeriod.regular.start * 1000, end: m.currentTradingPeriod.regular.end * 1000 }
       : null,
-    tz: m.exchangeTimezoneName,
+    tz,
     source: 'Yahoo Finance',
     intraday,
-    daily: daily ? parseDaily(daily) : [],
+    daily: dailyBars,
   };
 }
 
-// ---------- TWSE MIS（海外 IP 可能被擋，失敗即略過，以 Yahoo 為準）----------
+// ---------- TWSE MIS（海外 IP 可能被擋或偶發 503，重試 2 次，失敗改以期交所/盤後官方報價補強）----------
 function extractTwsePrice(it) {
   const z = num(it.z);
   if (z != null) return z;
@@ -147,19 +182,22 @@ function extractTwsePrice(it) {
 async function fetchTwseMis() {
   const chs = SYMBOLS.filter((s) => s.mis).map((s) => s.mis).join('|');
   const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${encodeURIComponent(chs)}&json=1&delay=0&_=${Date.now()}`;
-  const j = await fetchJSON(url, { headers: { Referer: 'https://mis.twse.com.tw/stock/index.jsp' } }, 1);
+  const j = await fetchJSON(url, { headers: { Referer: 'https://mis.twse.com.tw/stock/index.jsp' } }, 2);
   const out = {};
   for (const it of j.msgArray || []) {
     const key = SYMBOLS.find((s) => s.mis && s.mis.startsWith(`${it.ex}_${it.c}.`))?.key;
     if (!key) continue;
     const price = extractTwsePrice(it);
+    const rawVol = num(it.v);
+    // MIS 個股成交量 it.v 單位為「張」，統一換算為「股」以對齊 Yahoo 與證交所盤後 STOCK_DAY
+    const volume = (key === '2330' || key === '0050') && rawVol != null ? rawVol * 1000 : rawVol;
     out[key] = {
       price,
       prevClose: num(it.y),
       open: num(it.o),
       high: num(it.h),
       low: num(it.l),
-      volume: num(it.v),
+      volume,
       time: num(it.tlong) || Date.now(),
     };
   }
@@ -178,6 +216,8 @@ function twDayTs(dateStr) {
 
 async function fetchTpexDaily(prevDaily = []) {
   const byDate = new Map();
+  const turnoverByDate = new Map();
+  let latest = null;
   if (Array.isArray(prevDaily)) {
     for (const r of prevDaily) {
       if (Array.isArray(r) && r.length >= 5 && Number.isFinite(r[0]) && Number.isFinite(r[4])) {
@@ -197,6 +237,8 @@ async function fetchTpexDaily(prevDaily = []) {
       const o = num(row.open), h = num(row.max), l = num(row.min), c = num(row.close);
       if (!row.date || o == null || h == null || l == null || c == null) continue;
       byDate.set(row.date, [twDayTs(row.date), +o.toFixed(4), +h.toFixed(4), +l.toFixed(4), +c.toFixed(4), num(row.Trading_Volume) ?? 0]);
+      const money = num(row.Trading_money);
+      if (money != null && money > 0) turnoverByDate.set(row.date, +(money / 1e8).toFixed(2));
     }
   }
 
@@ -209,16 +251,37 @@ async function fetchTpexDaily(prevDaily = []) {
       if (o == null || h == null || l == null || c == null) continue;
       const existing = byDate.get(dateStr);
       byDate.set(dateStr, [twDayTs(dateStr), +o.toFixed(4), +h.toFixed(4), +l.toFixed(4), +c.toFixed(4), existing?.[5] ?? 0]);
+      const chg = num(row.Change);
+      if (!latest || dateStr >= latest.date) {
+        latest = {
+          date: dateStr,
+          open: o,
+          high: h,
+          low: l,
+          close: c,
+          prevClose: chg != null ? +(c - chg).toFixed(2) : null,
+        };
+      }
     }
   }
 
-  return [...byDate.entries()]
+  const bars = [...byDate.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .slice(-520)
     .map(([, bar]) => bar);
+
+  return { bars, latest, turnoverByDate };
 }
 
-// ---------- TAIFEX MIS 台指期 ----------
+// ---------- TAIFEX MIS 台指期（同時取得日盤現貨列 TXF-S 供加權指數交叉驗證）----------
+function parseTaifexTs(d, cTime, night) {
+  if (!d || !cTime || cTime.length < 6) return null;
+  const hh = +cTime.slice(0, 2), mm = +cTime.slice(2, 4), ss = +cTime.slice(4, 6);
+  let ts = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), hh - 8, mm, ss);
+  if (night && hh < 12) ts += 86400000;
+  return ts;
+}
+
 async function fetchTaifex(marketType) {
   const body = {
     MarketType: String(marketType), // 0 = 一般(日盤), 1 = 盤後(夜盤)
@@ -244,34 +307,49 @@ async function fetchTaifex(marketType) {
   const ref = num(q.CRefPrice); // 日盤 = 昨日結算價；夜盤 = 當日日盤結算價（期交所提供）
   const last = num(q.CLastPrice);
   const d = q.CDate; // 交易時段起始日
-  let time = null;
-  if (d && q.CTime) {
-    const hh = +q.CTime.slice(0, 2), mm = +q.CTime.slice(2, 4), ss = +q.CTime.slice(4, 6);
-    // 以台北時間 (UTC+8) 建立時間戳；夜盤跨日（00:00~05:00）需 +1 天
-    time = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), hh - 8, mm, ss);
-    if (night && hh < 12) time += 86400000;
+  const time = parseTaifexTs(d, q.CTime, night);
+
+  let spot = null;
+  if (!night) {
+    const sr = list.find((x) => x.SymbolID === 'TXF-S');
+    if (sr && num(sr.CLastPrice) != null && /^\d{8}$/.test(String(sr.CDate || ''))) {
+      const sd = sr.CDate;
+      spot = {
+        date: `${sd.slice(0, 4)}-${sd.slice(4, 6)}-${sd.slice(6, 8)}`,
+        price: num(sr.CLastPrice),
+        prevClose: num(sr.CRefPrice),
+        open: num(sr.COpenPrice),
+        high: num(sr.CHighPrice),
+        low: num(sr.CLowPrice),
+        time: parseTaifexTs(sd, sr.CTime, false) || Date.now(),
+      };
+    }
   }
+
   return {
-    key: night ? 'TXF_N' : 'TXF_D',
-    name: night ? '台指期（夜盤）' : '台指期（日盤）',
-    symbol: q.SymbolID,
-    contract: q.DispCName,
-    group: 'fut',
-    currency: 'TWD',
-    price: last,
-    prevClose: ref,
-    open: num(q.COpenPrice),
-    high: num(q.CHighPrice),
-    low: num(q.CLowPrice),
-    volume: num(q.CTotalVolume),
-    bid: num(q.CBidPrice1),
-    ask: num(q.CAskPrice1),
-    settlement: num(q.SettlementPrice),
-    sessionDate: d,
-    time,
-    source: '期交所 MIS',
-    intraday: [],
-    daily: [],
+    quote: {
+      key: night ? 'TXF_N' : 'TXF_D',
+      name: night ? '台指期（夜盤）' : '台指期（日盤）',
+      symbol: q.SymbolID,
+      contract: q.DispCName,
+      group: 'fut',
+      currency: 'TWD',
+      price: last,
+      prevClose: ref,
+      open: num(q.COpenPrice),
+      high: num(q.CHighPrice),
+      low: num(q.CLowPrice),
+      volume: num(q.CTotalVolume),
+      bid: num(q.CBidPrice1),
+      ask: num(q.CAskPrice1),
+      settlement: num(q.SettlementPrice),
+      sessionDate: d,
+      time,
+      source: '期交所 MIS',
+      intraday: [],
+      daily: [],
+    },
+    spot,
   };
 }
 
@@ -288,15 +366,17 @@ async function fetchCnnFearGreed() {
   const price = +Number(fg.score).toFixed(1);
   const prevClose = fg.previous_close != null ? +Number(fg.previous_close).toFixed(1) : price;
   const time = fg.timestamp ? new Date(fg.timestamp).getTime() : Date.now();
-  const hist = (j?.fear_and_greed_historical?.data || [])
-    .filter((p) => p && p.x != null && p.y != null)
-    .map((p) => {
-      const v = +Number(p.y).toFixed(1);
-      return [Number(p.x), v, v, v, v, 0];
-    })
-    .sort((a, b) => a[0] - b[0]);
+  const byDate = new Map();
+  for (const p of j?.fear_and_greed_historical?.data || []) {
+    if (!p || p.x == null || p.y == null) continue;
+    const rawTs = Number(p.x);
+    // CNN 歷史點以 UTC 午夜（% 86400000 === 0）代表美東交易日，若不調整會在 America/New_York 時區倒退一天
+    const ts = rawTs % 86400000 === 0 ? rawTs + 16 * 3600000 : rawTs;
+    const v = +Number(p.y).toFixed(1);
+    byDate.set(dateInTz(ts, 'America/New_York'), [ts, v, v, v, v, 0]);
+  }
+  const hist = [...byDate.values()].sort((a, b) => a[0] - b[0]);
   const intraday = hist.slice(-60).map((d) => [d[0], d[4]]);
-  const recent7 = hist.slice(-7).map((d) => d[4]);
   return {
     key: 'FGI',
     name: 'CNN 恐慌貪婪指數',
@@ -306,8 +386,8 @@ async function fetchCnnFearGreed() {
     price,
     prevClose,
     open: prevClose,
-    high: recent7.length ? Math.max(...recent7, price) : price,
-    low: recent7.length ? Math.min(...recent7, price) : price,
+    high: Math.max(price, prevClose),
+    low: Math.min(price, prevClose),
     prevWeek: fg.previous_1_week != null ? +Number(fg.previous_1_week).toFixed(1) : null,
     prevMonth: fg.previous_1_month != null ? +Number(fg.previous_1_month).toFixed(1) : null,
     prevYear: fg.previous_1_year != null ? +Number(fg.previous_1_year).toFixed(1) : null,
@@ -508,12 +588,67 @@ async function fetchTaifexForeignOi() {
   };
 }
 
+async function fetchTwseFmtqik() {
+  const j = await fetchJSON('https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK?response=json', {
+    headers: { Referer: 'https://www.twse.com.tw/zh/afterTrading/fmtqik.html' },
+  }, 2);
+  if (j?.stat !== 'OK' || !Array.isArray(j.data) || !j.data.length) return null;
+  const last = j.data[j.data.length - 1];
+  const date = rocToIso(last[0]);
+  const close = num(last[4]);
+  const chg = num(last[5]);
+  const amountTwd = num(last[2]);
+  if (!date || close == null) return null;
+  return {
+    date,
+    close,
+    chg,
+    prevClose: chg != null ? +(close - chg).toFixed(2) : null,
+    shares: num(last[1]),
+    turnoverYi: amountTwd != null ? +(amountTwd / 1e8).toFixed(2) : null,
+  };
+}
+
+async function fetchTwseStockDay(stockNo) {
+  const j = await fetchJSON(`https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&stockNo=${encodeURIComponent(stockNo)}`, {
+    headers: { Referer: 'https://www.twse.com.tw/zh/afterTrading/stock-day.html' },
+  }, 2);
+  if (j?.stat !== 'OK' || !Array.isArray(j.data) || !j.data.length) return null;
+  const last = j.data[j.data.length - 1];
+  const date = rocToIso(last[0]);
+  const volume = num(last[1]); // 總成交股數（含盤中零股、盤後定價/零股）
+  const amountTwd = num(last[2]);
+  const open = num(last[3]);
+  const high = num(last[4]);
+  const low = num(last[5]);
+  const close = num(last[6]);
+  const chgRaw = String(last[7] || '').trim();
+  const isEx = /^[Xx]/.test(chgRaw); // 除權息日為 X 開頭，不可直接用 close - chg 推算昨收參考價
+  const chg = isEx ? null : num(chgRaw);
+  if (!date || close == null) return null;
+  return {
+    date,
+    volume,
+    turnoverYi: amountTwd != null ? +(amountTwd / 1e8).toFixed(2) : null,
+    open,
+    high,
+    low,
+    close,
+    isEx,
+    prevClose: chg != null ? +(close - chg).toFixed(2) : null,
+  };
+}
+
 async function loadPrevious() {
-  try {
-    return await fetchJSON(`${SITE_URL.replace(/\/?$/, '/')}data.json?_=${Date.now()}`, {}, 1);
-  } catch {
-    return null;
-  }
+  const [remoteRes, localRes] = await Promise.allSettled([
+    fetchJSON(`${SITE_URL.replace(/\/?$/, '/')}data.json?_=${Date.now()}`, {}, 1),
+    readFile('site/data.json', 'utf8').then((s) => JSON.parse(s)),
+  ]);
+  const candidates = [remoteRes, localRes]
+    .filter((r) => r.status === 'fulfilled' && r.value?.version === SCHEMA_VERSION && r.value?.quotes)
+    .map((r) => r.value)
+    .sort((a, b) => (b.generatedAt || 0) - (a.generatedAt || 0));
+  return candidates[0] || null;
 }
 
 async function main() {
@@ -532,7 +667,8 @@ async function main() {
     }
   });
 
-  // 櫃買指數兩年日 K（FinMind + 櫃買中心 OpenAPI）
+  // 櫃買指數兩年日 K + 最新官方開高低收（FinMind + 櫃買中心 OpenAPI）
+  let tpexInfo = { bars: [], latest: null, turnoverByDate: new Map() };
   try {
     const oldTpex = prev?.version === SCHEMA_VERSION ? prev.quotes?.TPEX : null;
     if (!quotes.TPEX) {
@@ -543,8 +679,8 @@ async function main() {
         intraday: [], daily: [],
       };
     }
-    const tpexDaily = await fetchTpexDaily(oldTpex?.daily);
-    if (tpexDaily.length) quotes.TPEX.daily = tpexDaily;
+    tpexInfo = await fetchTpexDaily(oldTpex?.daily);
+    if (tpexInfo.bars.length) quotes.TPEX.daily = tpexInfo.bars;
   } catch (e) {
     errors.push(`TPEX daily: ${e.message}`);
   }
@@ -598,9 +734,11 @@ async function main() {
     errors.push(`TWSE MIS: ${e.message}`);
   }
 
+  let txfSpot = null;
   for (const mt of [0, 1]) {
     try {
-      const f = await fetchTaifex(mt);
+      const { quote: f, spot } = await fetchTaifex(mt);
+      if (spot) txfSpot = spot;
       // 累積期貨盤中走勢（從上一版 data.json 接續，換交易時段就重置）
       const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[f.key] : null;
       let series = old && old.sessionDate === f.sessionDate && old.symbol === f.symbol ? old.intraday || [] : [];
@@ -617,6 +755,111 @@ async function main() {
     }
   }
 
+  // 台股官方交叉校準：當證交所 MIS 盤後 503 或個股盤後定價/零股總量差異時，以期交所 TXF-S、證交所 FMTQIK / STOCK_DAY 與櫃買 OpenAPI 校準
+  const [fmtqikRes, sd2330Res, sd0050Res] = await Promise.allSettled([
+    fetchTwseFmtqik(),
+    fetchTwseStockDay('2330'),
+    fetchTwseStockDay('0050'),
+  ]);
+  const fmtqik = fmtqikRes.status === 'fulfilled' ? fmtqikRes.value : null;
+  const stockDays = {
+    2330: sd2330Res.status === 'fulfilled' ? sd2330Res.value : null,
+    '0050': sd0050Res.status === 'fulfilled' ? sd0050Res.value : null,
+  };
+
+  if (quotes.TWII) {
+    const q = quotes.TWII;
+    let qDate = q.time ? twDateStr(q.time) : null;
+    if (txfSpot && (!qDate || txfSpot.date >= qDate)) {
+      if (!q.source?.includes('證交所 MIS')) {
+        q.price = txfSpot.price;
+        if (txfSpot.prevClose != null) q.prevClose = txfSpot.prevClose;
+        if (txfSpot.open != null) q.open = txfSpot.open;
+        if (txfSpot.high != null) q.high = Math.max(txfSpot.high, txfSpot.price);
+        if (txfSpot.low != null) q.low = Math.min(txfSpot.low, txfSpot.price);
+        q.time = txfSpot.time;
+        q.source = '期交所現貨';
+        q.stale = false;
+        qDate = txfSpot.date;
+      } else if (txfSpot.date === qDate && q.prevClose == null && txfSpot.prevClose != null) {
+        q.prevClose = txfSpot.prevClose;
+      }
+    }
+    if (fmtqik) {
+      if (qDate === fmtqik.date) {
+        if (fmtqik.turnoverYi != null) q.turnoverYi = fmtqik.turnoverYi;
+        if (fmtqik.prevClose != null) q.prevClose = fmtqik.prevClose;
+        if (fmtqik.close != null && !q.source?.includes('證交所 MIS')) {
+          q.price = fmtqik.close;
+          q.source = q.source?.includes('期交所') ? '期交所現貨 / 證交所盤後' : '證交所盤後';
+          q.stale = false;
+        }
+        if (Array.isArray(q.daily) && q.daily.length) {
+          const lastBar = q.daily[q.daily.length - 1];
+          if (twDateStr(lastBar[0]) === fmtqik.date) lastBar[4] = fmtqik.close;
+        }
+      } else if (!q.source?.includes('證交所 MIS') && !txfSpot && qDate && qDate > fmtqik.date && Array.isArray(q.daily)) {
+        let prevBar = null;
+        for (let i = q.daily.length - 1; i >= 0; i--) {
+          if (twDateStr(q.daily[i][0]) < qDate) { prevBar = q.daily[i]; break; }
+        }
+        if (prevBar && twDateStr(prevBar[0]) === fmtqik.date) q.prevClose = fmtqik.close;
+      }
+    }
+  }
+
+  if (quotes.TPEX) {
+    const q = quotes.TPEX;
+    const qDate = q.time ? twDateStr(q.time) : tpexInfo.latest?.date || null;
+    if (qDate && tpexInfo.turnoverByDate.has(qDate)) {
+      q.turnoverYi = tpexInfo.turnoverByDate.get(qDate);
+    }
+    if (tpexInfo.latest && (!qDate || tpexInfo.latest.date === qDate)) {
+      if (!q.source?.includes('證交所 MIS')) {
+        if (tpexInfo.latest.prevClose != null) q.prevClose = tpexInfo.latest.prevClose;
+        if (tpexInfo.latest.open != null) q.open = tpexInfo.latest.open;
+        if (tpexInfo.latest.high != null) q.high = tpexInfo.latest.high;
+        if (tpexInfo.latest.low != null) q.low = tpexInfo.latest.low;
+        if (tpexInfo.latest.close != null) q.price = tpexInfo.latest.close;
+        if (!q.time) q.time = twDayTs(tpexInfo.latest.date);
+        q.source = '櫃買中心 OpenAPI';
+        q.stale = false;
+      } else if (tpexInfo.latest.prevClose != null && q.prevClose == null) {
+        q.prevClose = tpexInfo.latest.prevClose;
+      }
+    }
+  }
+
+  for (const key of ['2330', '0050']) {
+    const q = quotes[key];
+    const sd = stockDays[key];
+    if (!q || !sd) continue;
+    const qDate = q.time ? twDateStr(q.time) : null;
+    if (qDate === sd.date) {
+      // 以證交所 STOCK_DAY 官方總成交股數（含盤後零股與定價交易）補強 MIS 盤中股數
+      if (sd.volume != null && sd.volume > 0) q.volume = Math.max(q.volume ?? 0, sd.volume);
+      if (sd.turnoverYi != null) q.turnoverYi = sd.turnoverYi;
+      if (!q.source?.includes('證交所 MIS')) {
+        if (sd.open != null) q.open = sd.open;
+        if (sd.high != null) q.high = sd.high;
+        if (sd.low != null) q.low = sd.low;
+        if (sd.close != null) q.price = sd.close;
+        if (sd.prevClose != null) q.prevClose = sd.prevClose;
+        q.source = '證交所盤後';
+        q.stale = false;
+      }
+      if (Array.isArray(q.daily) && q.daily.length) {
+        const bar = q.daily.find((b) => twDateStr(b[0]) === sd.date);
+        if (bar) {
+          if (sd.open != null) bar[1] = sd.open;
+          if (sd.high != null) bar[2] = sd.high;
+          if (sd.low != null) bar[3] = sd.low;
+          if (sd.close != null) bar[4] = sd.close;
+          if (sd.volume != null) bar[5] = sd.volume;
+        }
+      }
+    }
+  }
 
   // 證交所融資餘額、外資買賣超 & 期交所外資期貨多空淨口數（盤後更新；盤中沿用前一交易日快照）
   for (const [key, fn, label] of [

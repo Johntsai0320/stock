@@ -9,7 +9,7 @@
   'use strict';
 
   const SCHEMA_VERSION = 3;
-  const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}`;
+  const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}_2`;
   const CACHE_MAX_AGE = 1000 * 60 * 60 * 18; // 18 小時以上的快取直接丟棄
   const SNAPSHOT_INTERVAL = 8_000;  // 每 8 秒自動抓取雲端快照（極速同步）
   const LIVE_INTERVAL = 15_000;     // 每 15 秒嘗試抓取即時報價
@@ -32,7 +32,7 @@
     IXIC: { name: '那斯達克', symbol: '^IXIC', y: '^IXIC', tz: 'America/New_York' },
     SOX: { name: '費城半導體', symbol: '^SOX', y: '^SOX', tz: 'America/New_York' },
     FGI: { name: 'CNN 恐慌貪婪指數', symbol: 'CNN Fear & Greed', tz: 'America/New_York' },
-    VIX: { name: 'VIX 恐慌指數', symbol: '^VIX', y: '^VIX', tz: 'America/New_York' },
+    VIX: { name: 'VIX 恐慌指數', symbol: '^VIX', y: '^VIX', tz: 'America/Chicago' },
     TSM: { name: '台積電 ADR', symbol: 'TSM', y: 'TSM', tz: 'America/New_York' },
     VT: { name: 'Vanguard 全世界股票', symbol: 'VT', y: 'VT', tz: 'America/New_York' },
     QQQM: { name: 'Invesco 那斯達克100', symbol: 'QQQM', y: 'QQQM', tz: 'America/New_York' },
@@ -95,8 +95,15 @@
   const decimalsFor = (key) => (key === 'USDTWD' ? 3 : key === 'FGI' ? 1 : key.startsWith('TXF') ? 0 : 2);
 
   const fmt = (v, d = 2) => (isNum(v) ? v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '—');
-  const fmtVol = (v) => {
+  const fmtVol = (v, q) => {
     if (!isNum(v) || v <= 0) return '—';
+    const key = q?.key;
+    if (key === '2330' || key === '0050') {
+      const lots = Math.round(v / 1000);
+      if (lots >= 1e6) return (lots / 1e4).toFixed(1) + ' 萬張';
+      return lots.toLocaleString('en-US') + ' 張';
+    }
+    if (q?.group === 'fut') return Math.round(v).toLocaleString('en-US') + ' 口';
     if (v >= 1e8) return (v / 1e8).toFixed(2) + '億';
     if (v >= 1e4) return (v / 1e4).toFixed(1) + '萬';
     return v.toLocaleString('en-US');
@@ -164,7 +171,7 @@
     try {
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const k = localStorage.key(i);
-        if (k && /^stockdash:v\d+$/.test(k) && k !== CACHE_KEY) localStorage.removeItem(k);
+        if (k && /^stockdash:v[\w.]+$/.test(k) && k !== CACHE_KEY) localStorage.removeItem(k);
       }
     } catch {}
   }
@@ -195,7 +202,10 @@
   }
 
   // ---------------- 合併報價 ----------------
-  /** 新資料較新（或同時間）才覆寫；歷史 K 線與期貨盤中序列保留較完整者 */
+  const isTwAuthSource = (s) => Boolean(s && /證交所|櫃買|期交所/.test(s));
+  const PRICE_INDEX_KEYS = new Set(['TWII', 'DJI', 'GSPC', 'IXIC', 'SOX', 'VIX']);
+
+  /** 新資料較新（或同時間）才覆寫；同日絕不讓 Yahoo 覆蓋證交所/櫃買/期交所權威報價 */
   function mergeQuote(nq, { fromCache = false } = {}) {
     if (!nq || !nq.key) return false;
     const old = state.quotes[nq.key];
@@ -203,29 +213,71 @@
       state.quotes[nq.key] = { ...nq };
       return true;
     }
+    const tz = nq.tz || old.tz || META[nq.key]?.tz || 'UTC';
     const isSessionSwitched = Boolean(nq.sessionDate && old.sessionDate && nq.sessionDate !== old.sessionDate);
-    const isTwseOverridingYahoo = Boolean(nq.source?.includes('證交所') && old.source?.includes('Yahoo'));
-    const newer = (nq.time || 0) >= (old.time || 0) || isTwseOverridingYahoo || isSessionSwitched;
-    // 基準價跨日校正：若新資料時間較新且基準不同，以新資料為準（交易日已切換）
-    if (!newer && !fromCache) {
-      if (nq.daily?.length > (old.daily?.length || 0)) old.daily = nq.daily;
+    const nqDay = isNum(nq.time) && nq.time > 0 ? tzParts(nq.time, tz).date : null;
+    const oldDay = isNum(old.time) && old.time > 0 ? tzParts(old.time, tz).date : null;
+
+    if (!fromCache && isTwAuthSource(old.source) && nq.source?.includes('Yahoo') && nqDay && oldDay && nqDay <= oldDay) {
       return false;
+    }
+
+    const isAuthOverridingYahoo = Boolean(isTwAuthSource(nq.source) && old.source?.includes('Yahoo'));
+    const newer = (nq.time || 0) >= (old.time || 0) || isAuthOverridingYahoo || isSessionSwitched;
+    if (!newer && !fromCache) {
+      let touched = false;
+      if (nq.daily?.length > (old.daily?.length || 0)) { old.daily = nq.daily; touched = true; }
+      if (nqDay && oldDay && nqDay === oldDay) {
+        if (isNum(nq.open) && !isNum(old.open)) { old.open = nq.open; touched = true; }
+        if (isNum(nq.turnoverYi) && !isNum(old.turnoverYi)) { old.turnoverYi = nq.turnoverYi; touched = true; }
+        if ((nq.key === '2330' || nq.key === '0050') && isNum(nq.volume) && (!isNum(old.volume) || nq.volume > old.volume)) {
+          old.volume = nq.volume;
+          touched = true;
+        }
+      }
+      return touched;
     }
     if (isSessionSwitched) {
       // 交易日切換（如 15:00 夜盤開盤），以新開盤價、新基準價與新走勢完全替換舊時段
       state.quotes[nq.key] = { ...nq };
       return true;
     }
+
     const merged = { ...old, ...nq };
-    for (const f of ['daily', 'intraday']) {
-      if (!nq[f] || !nq[f].length) merged[f] = old[f] || [];
+    const dayAdvanced = Boolean(nqDay && oldDay && nqDay > oldDay);
+    if (dayAdvanced) {
+      if (!isNum(nq.open)) merged.open = nq.intraday?.[0]?.[1] ?? null;
+      if (!isNum(nq.turnoverYi)) delete merged.turnoverYi;
+    } else if (nqDay && oldDay && nqDay === oldDay) {
+      if (!isNum(merged.open) && isNum(old.open)) merged.open = old.open;
+      if (!isNum(merged.high) && isNum(old.high)) merged.high = old.high;
+      if (!isNum(merged.low) && isNum(old.low)) merged.low = old.low;
+      if ((nq.key === '2330' || nq.key === '0050') && isNum(old.volume) && isNum(nq.volume)) {
+        merged.volume = Math.max(old.volume, nq.volume);
+      }
     }
+
+    if (!nq.daily || !nq.daily.length) merged.daily = old.daily || [];
+
     if (nq.group === 'fut' && old.intraday?.length && nq.intraday?.length && old.sessionDate === nq.sessionDate) {
-      // 合併期貨走勢（去重、依時間排序）
       const map = new Map([...old.intraday, ...nq.intraday].map((p) => [p[0], p]));
       merged.intraday = [...map.values()].sort((a, b) => a[0] - b[0]).slice(-800);
+    } else if (nq.intraday?.length && old.intraday?.length && !dayAdvanced) {
+      const sameDayOld = nqDay ? old.intraday.filter((p) => Array.isArray(p) && p[1] != null && tzParts(p[0], tz).date === nqDay) : old.intraday;
+      const map = new Map([...sameDayOld, ...nq.intraday].map((p) => [p[0], p]));
+      merged.intraday = [...map.values()].sort((a, b) => a[0] - b[0]);
+    } else if (!nq.intraday || !nq.intraday.length) {
+      if (dayAdvanced) {
+        merged.intraday = isNum(nq.price) && isNum(nq.time) ? [[nq.time, nq.price]] : [];
+      } else {
+        merged.intraday = old.intraday || [];
+        if (isNum(nq.price) && isNum(nq.time) && nq.group !== 'twchip') {
+          const last = merged.intraday[merged.intraday.length - 1];
+          if (!last || nq.time > last[0]) merged.intraday = [...merged.intraday, [nq.time, nq.price]];
+        }
+      }
     }
-    if (!merged.daily?.length && old.daily?.length) merged.daily = old.daily;
+
     state.quotes[nq.key] = merged;
     return true;
   }
@@ -316,6 +368,8 @@
       const prevClose = num(it.y);
       if (!isNum(price) || !isNum(prevClose)) continue;
       const time = num(it.tlong) || Date.now();
+      const rawVol = num(it.v);
+      const volume = (key === '2330' || key === '0050') && isNum(rawVol) ? rawVol * 1000 : rawVol;
       const nq = {
         key,
         price,
@@ -323,7 +377,7 @@
         open: num(it.o),
         high: num(it.h),
         low: num(it.l),
-        volume: num(it.v),
+        volume,
         time,
         source: '證交所 MIS（即時）',
         stale: false,
@@ -359,7 +413,7 @@
 
   async function loadYahooLive() {
     const syms = Object.values(META).filter((m) => m.y).map((m) => m.y).join(',');
-    const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(syms)}&range=1d&interval=5m&_=${Math.floor(Date.now() / 15000)}`;
+    const url = `https://query1.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(syms)}&range=1d&interval=1m&_=${Math.floor(Date.now() / 15000)}`;
     const j = await viaProxy(url, {}, (x) => Array.isArray(x?.spark?.result));
     let changed = false;
     for (const r of j.spark.result) {
@@ -367,7 +421,26 @@
       const resp = r.response?.[0];
       if (!key || !resp) continue;
       const q = parseYahooMeta(key, resp);
-      if (q && q.time >= (state.quotes[key]?.time || 0)) {
+      if (!q) continue;
+      const old = state.quotes[key];
+      const tz = old?.tz || META[key]?.tz || 'UTC';
+      const nqDay = q.time ? tzParts(q.time, tz).date : null;
+      if (isTwAuthSource(old?.source) && old?.time && nqDay && nqDay <= tzParts(old.time, 'Asia/Taipei').date) {
+        continue;
+      }
+      if (PRICE_INDEX_KEYS.has(key) && nqDay && old?.daily?.length) {
+        let prevBar = null;
+        for (let i = old.daily.length - 1; i >= 0; i--) {
+          if (tzParts(old.daily[i][0], tz).date < nqDay) { prevBar = old.daily[i]; break; }
+        }
+        if (prevBar && prevBar[4] > 0) {
+          const dPrev = round(prevBar[4], 2);
+          if (key === 'TWII' || Math.abs(dPrev - q.prevClose) <= Math.max(0.5, q.prevClose * 0.0001)) {
+            q.prevClose = dPrev;
+          }
+        }
+      }
+      if (q.time >= (old?.time || 0)) {
         changed = mergeQuote({ ...q, stale: false }) || changed;
       }
     }
@@ -472,7 +545,7 @@
     }
 
     const timeDisplay = isNum(q.time) && q.time > 0
-      ? `<span title="台北時間 ${timeStr(q.time, 'Asia/Taipei')}${meta.tz && meta.tz !== 'Asia/Taipei' ? '（美東 ' + timeStr(q.time, 'America/New_York') + '）' : ''}">${timeStr(q.time, 'Asia/Taipei')}</span>`
+      ? `<span title="台北時間 ${timeStr(q.time, 'Asia/Taipei')}${meta.tz && meta.tz.startsWith('America/') ? '（美東 ' + timeStr(q.time, 'America/New_York') + '）' : ''}">${timeStr(q.time, 'Asia/Taipei')}</span>`
       : '<span>—</span>';
 
     const metaRow = key === 'FGI'
@@ -606,9 +679,21 @@
     return out;
   }
 
-  /** 日 K 對齊最新報價：最後一根若為同一交易日則以現價校正，否則補上今日 K 棒 */
+  /** 日 K 對齊最新報價：依交易時區去重排序，最後一根若為同一交易日則以現價校正，否則補上今日 K 棒 */
   function alignedDaily(q, tz) {
-    const rows = (q.daily || []).map((r) => ({ date: tzParts(r[0], tz).date, o: r[1], h: r[2], l: r[3], c: r[4] }));
+    const byDate = new Map();
+    for (const r of q.daily || []) {
+      if (!Array.isArray(r) || r.length < 5 || !isNum(r[0]) || !isNum(r[4])) continue;
+      const date = tzParts(r[0], tz).date;
+      byDate.set(date, {
+        date,
+        o: isNum(r[1]) ? r[1] : r[4],
+        h: isNum(r[2]) ? r[2] : r[4],
+        l: isNum(r[3]) ? r[3] : r[4],
+        c: r[4],
+      });
+    }
+    const rows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
     if (!rows.length || !isNum(q.price) || !q.time) return rows;
     const today = tzParts(q.time, tz).date;
     const last = rows[rows.length - 1];
@@ -617,7 +702,14 @@
       last.h = Math.max(last.h, q.price, isNum(q.high) ? q.high : -Infinity);
       last.l = Math.min(last.l, q.price, isNum(q.low) ? q.low : Infinity);
     } else if (today > last.date) {
-      rows.push({ date: today, o: isNum(q.open) ? q.open : q.price, h: isNum(q.high) ? q.high : q.price, l: isNum(q.low) ? q.low : q.price, c: q.price });
+      const o = isNum(q.open) ? q.open : q.price;
+      rows.push({
+        date: today,
+        o,
+        h: Math.max(o, q.price, isNum(q.high) ? q.high : -Infinity),
+        l: Math.min(o, q.price, isNum(q.low) ? q.low : Infinity),
+        c: q.price,
+      });
     }
     return rows;
   }
@@ -868,19 +960,21 @@
     if (!q) return;
     const d = decimalsFor(key);
     const { chg, pct, dir } = calc(q);
-    const tzNote = meta.tz && meta.tz !== 'Asia/Taipei'
+    const tz = q.tz || meta.tz || 'UTC';
+    const tzNote = meta.tz && meta.tz.startsWith('America/')
       ? `台北 ${timeStr(q.time, 'Asia/Taipei')}（美東 ${timeStr(q.time, 'America/New_York')}）`
       : timeStr(q.time, 'Asia/Taipei');
+    $('#sheet-title').textContent = meta.name;
     $('#sheet-sub').textContent = `${q.group === 'fut' ? `${q.contract || ''} ${q.symbol || ''}` : meta.symbol} · ${q.source || ''} · ${tzNote}`;
     $('#sheet-price').innerHTML = `<span class="${dir}">${fmt(q.price, d)}</span>`;
     $('#sheet-chg').className = `chg ${dir}`;
     $('#sheet-chg').innerHTML = `<span>${arrow(dir)} ${signed(chg, d)}</span><span class="pct">${signed(pct, 2)}%</span>`;
     for (const b of document.querySelectorAll('#sheet-tabs .tab')) b.setAttribute('aria-selected', String(b.dataset.range === state.range));
 
-    const series = buildSeries(q, meta.tz);
+    const series = buildSeries(q, tz);
     drawCharts(series, q, rebuild);
 
-    const rows = alignedDaily(q, meta.tz);
+    const rows = alignedDaily(q, tz);
     const diag = analyzeMovingAverages(rows, q.price);
     const maEl = $('#sheet-ma');
     if (maEl) maEl.innerHTML = renderMaPanel(diag, d);
@@ -917,9 +1011,12 @@
         [state.range === '1d' ? '分時 MA20' : '月線 (20MA)', lastMA ? fmt(lastMA.value, d) : '—'],
       ];
     } else {
+      const volStat = isNum(q.turnoverYi) && (!isNum(q.volume) || q.volume <= 0)
+        ? ['成交金額', `${fmt(q.turnoverYi, 1)} 億`]
+        : ['成交量', fmtVol(q.volume, q)];
       stats = [
         ['開盤', fmt(q.open, d)], ['最高', fmt(q.high, d)], ['最低', fmt(q.low, d)], [baseLabel, fmt(q.prevClose, d)],
-        ['成交量', fmtVol(q.volume)], ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
+        volStat, ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
         ['月線 (20MA)', diag?.mas?.ma20?.val ? fmt(diag.mas.ma20.val, d) : '—'],
         ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
         ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
@@ -993,7 +1090,7 @@
       mainEl.innerHTML = '';
       rsiEl.innerHTML = '';
       if (empty) {
-        mainEl.innerHTML = `<div class="empty-chart">${q.group === 'fut' ? '期貨走勢由雲端排程每 5 分鐘累積，開盤後即會出現' : '尚無走勢資料'}</div>`;
+        mainEl.innerHTML = `<div class="empty-chart">${q.group === 'fut' ? '期貨走勢由雲端排程隨盤中每分鐘累積，開盤後即會出現' : '尚無走勢資料'}</div>`;
         $('#sheet-legend').innerHTML = '';
         return;
       }
@@ -1048,7 +1145,7 @@
     if (s.kind === 'line') {
       $('#sheet-legend').innerHTML =
         `<span><i style="background:${MA20}"></i>分時 MA20</span>` +
-        `<span>5 分鐘走勢</span>`;
+        `<span>分時走勢</span>`;
     } else {
       $('#sheet-legend').innerHTML =
         `<span><i style="background:${MA20}"></i>月線 MA20</span>` +
