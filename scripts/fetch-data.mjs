@@ -440,59 +440,163 @@ async function fetchTwseMargin() {
   };
 }
 
-async function fetchTwseInst() {
+const FM_INST_MAP = [
+  ['Dealer_self', '自營商(自行買賣)'],
+  ['Dealer_Hedging', '自營商(避險)'],
+  ['Investment_Trust', '投信'],
+  ['Foreign_Investor', '外資及陸資(不含外資自營商)'],
+  ['Foreign_Dealer_Self', '外資自營商'],
+  ['total', '合計'],
+];
+
+async function fetchTwseInst(prevInst = null) {
   const j = await fetchJSON('https://www.twse.com.tw/rwd/zh/fund/BFI82U?response=json&type=day', {
     headers: { Referer: 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html' },
   });
   if (j?.stat !== 'OK' || !Array.isArray(j.data)) {
     throw new Error(`TWSE BFI82U stat=${j?.stat || 'unknown'}`);
   }
-  const byExact = (name) => {
-    const row = j.data.find((r) => String(r[0]).trim() === name);
-    return row ? num(row[3]) : null;
-  };
-  const byPrefix = (prefix) => {
-    const row = j.data.find((r) => String(r[0]).trim().startsWith(prefix));
-    return row ? num(row[3]) : null;
-  };
+  const rows = j.data
+    .map((r) => ({
+      name: String(r[0] || '').trim(),
+      buy: num(r[1]) ?? 0,
+      sell: num(r[2]) ?? 0,
+      diff: num(r[3]) ?? 0,
+    }))
+    .filter((r) => r.name);
+
+  const byExact = (name) => rows.find((r) => r.name === name)?.diff ?? null;
+  const byPrefix = (prefix) => rows.find((r) => r.name.startsWith(prefix))?.diff ?? null;
   // 證交所 BFI82U「外資及陸資(不含外資自營商)」名稱內含「外資自營商」字樣，不可用 includes('外資自營商')；
   // 且依證交所說明，外資自營商已計入自營商，故外資買賣超取「外資及陸資(不含外資自營商)」與三大法人合計一致
   const foreignNet = byPrefix('外資及陸資') ?? 0;
   const trustNet = byExact('投信') ?? byPrefix('投信') ?? 0;
-  const dealerNet = (byExact('自營商(自行買賣)') ?? byPrefix('自營商(自行買賣)') ?? 0)
-    + (byExact('自營商(避險)') ?? byPrefix('自營商(避險)') ?? 0);
+  const dealerSelfNet = byExact('自營商(自行買賣)') ?? byPrefix('自營商(自行買賣)') ?? 0;
+  const dealerHedgeNet = byExact('自營商(避險)') ?? byPrefix('自營商(避險)') ?? 0;
+  const dealerNet = dealerSelfNet + dealerHedgeNet;
   const totalNet = byExact('合計') ?? (foreignNet + trustNet + dealerNet);
   const toYi = (v) => +(v / 1e8).toFixed(2);
   const foreignYi = toYi(foreignNet);
   const trustYi = toYi(trustNet);
+  const dealerSelfYi = toYi(dealerSelfNet);
+  const dealerHedgeYi = toYi(dealerHedgeNet);
   const dealerYi = toYi(dealerNet);
   const totalYi = toYi(totalNet);
+  const date = String(j.date || '').trim();
+
+  // 歷史近 30 交易日明細：從上一版快照延續，必要時（初次、換交易日或每 6 小時）透過 FinMind 補齊完整買賣金額明細
+  const histByDate = new Map();
+  for (const h of Array.isArray(prevInst?.history) ? prevInst.history : []) {
+    if (h?.date && h.exact && Array.isArray(h.rows) && h.rows.length) {
+      histByDate.set(h.date, h);
+    }
+  }
+  let histSyncedAt = prevInst?.histSyncedAt || 0;
+  const needHistSync = histByDate.size < 15
+    || (date && prevInst?.date !== date)
+    || (Date.now() - histSyncedAt > 6 * 3600 * 1000);
+
+  if (needHistSync) {
+    try {
+      const start = twDateStr(Date.now() - 48 * 86400000);
+      const fm = await fetchJSON(
+        `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockTotalInstitutionalInvestors&start_date=${start}`,
+        {},
+        2
+      );
+      if (Array.isArray(fm?.data) && fm.data.length) {
+        const grouped = new Map();
+        for (const r of fm.data) {
+          const d = String(r.date || '').replace(/-/g, '');
+          if (!/^\d{8}$/.test(d) || (date && d > date)) continue;
+          if (!grouped.has(d)) grouped.set(d, new Map());
+          const buy = num(r.buy) ?? 0;
+          const sell = num(r.sell) ?? 0;
+          grouped.get(d).set(String(r.name || ''), { buy, sell, diff: buy - sell });
+        }
+        for (const [d, m] of grouped.entries()) {
+          const fRows = FM_INST_MAP
+            .filter(([k]) => m.has(k))
+            .map(([k, label]) => ({ name: label, ...m.get(k) }));
+          if (!fRows.length) continue;
+          const fNet = m.get('Foreign_Investor')?.diff ?? 0;
+          const tNet = m.get('Investment_Trust')?.diff ?? 0;
+          const dsNet = m.get('Dealer_self')?.diff ?? 0;
+          const dhNet = m.get('Dealer_Hedging')?.diff ?? 0;
+          const dNet = dsNet + dhNet;
+          const totNet = m.get('total')?.diff ?? (fNet + tNet + dNet);
+          histByDate.set(d, {
+            date: d,
+            foreignYi: toYi(fNet),
+            trustYi: toYi(tNet),
+            dealerSelfYi: toYi(dsNet),
+            dealerHedgeYi: toYi(dhNet),
+            dealerYi: toYi(dNet),
+            totalYi: toYi(totNet),
+            v: toYi(fNet),
+            total: toYi(totNet),
+            exact: true,
+            rows: fRows,
+          });
+        }
+        histSyncedAt = Date.now();
+      }
+    } catch {
+      // 歷史補齊失敗不影響當日證交所官方數據
+    }
+  }
+
+  if (date) {
+    histByDate.set(date, {
+      date,
+      foreignYi,
+      trustYi,
+      dealerSelfYi,
+      dealerHedgeYi,
+      dealerYi,
+      totalYi,
+      v: foreignYi,
+      total: totalYi,
+      exact: true,
+      rows,
+    });
+  }
+  const history = [...histByDate.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-30);
+
   return {
     key: 'INST',
     name: '外資買賣超',
     symbol: 'TWSE Foreign Net',
     group: 'twchip',
     currency: '億TWD',
+    title: j.title || '',
     price: foreignYi,
     prevClose: 0,
     foreignYi,
     trustYi,
+    dealerSelfYi,
+    dealerHedgeYi,
     dealerYi,
     totalYi,
-    date: j.date || '',
+    rows,
+    history,
+    histSyncedAt,
+    date,
     time: Date.now(),
     tz: 'Asia/Taipei',
     source: '證交所三大法人',
   };
 }
 
-// ---------- 期交所：三大法人台指期（外資期貨多空未平倉口數淨額 & 單日增減）----------
+// ---------- 期交所：三大法人台指期（外資期貨多空未平倉口數淨額 & 單日增減 + 完整三大法人明細）----------
 async function fetchTaifexForeignOi() {
   const byDate = new Map();
   let sourceLabel = '期交所';
 
   try {
-    const startFmt = twDateStr(Date.now() - 25 * 86400000).replace(/-/g, '/');
+    const startFmt = twDateStr(Date.now() - 45 * 86400000).replace(/-/g, '/');
     const endFmt = twDateStr(Date.now()).replace(/-/g, '/');
     const res = await fetch('https://www.taifex.com.tw/cht/3/futContractsDateDown', {
       method: 'POST',
@@ -509,18 +613,29 @@ async function fetchTaifexForeignOi() {
     const lines = txt.trim().split(/\r?\n/);
     for (const line of lines.slice(1)) {
       const cols = line.split(',').map((s) => s.trim());
-      if (cols.length < 14 || !/^\d{4}\/\d{2}\/\d{2}$/.test(cols[0])) continue;
+      if (cols.length < 15 || !/^\d{4}\/\d{2}\/\d{2}$/.test(cols[0])) continue;
       const date = cols[0].replace(/\//g, '');
       const role = cols[2];
       const longOI = num(cols[9]);
       const shortOI = num(cols[11]);
       const netOI = num(cols[13]);
       if (longOI == null || shortOI == null || netOI == null) continue;
+      const entry = {
+        longOI,
+        shortOI,
+        netOI,
+        longAmt: num(cols[10]),
+        shortAmt: num(cols[12]),
+        netAmt: num(cols[14]),
+        tradeLong: num(cols[3]),
+        tradeShort: num(cols[5]),
+        tradeNet: num(cols[7]),
+      };
       if (!byDate.has(date)) byDate.set(date, {});
       const d = byDate.get(date);
-      if (role.includes('外資')) d.foreign = { longOI, shortOI, netOI };
-      else if (role.includes('投信')) d.trust = { longOI, shortOI, netOI };
-      else if (role.includes('自營')) d.dealer = { longOI, shortOI, netOI };
+      if (role.includes('外資')) d.foreign = entry;
+      else if (role.includes('投信')) d.trust = entry;
+      else if (role.includes('自營')) d.dealer = entry;
     }
   } catch {
     byDate.clear();
@@ -528,7 +643,7 @@ async function fetchTaifexForeignOi() {
 
   // Fallback: FinMind TaiwanFuturesInstitutionalInvestors (TX)
   if (byDate.size < 2) {
-    const start = twDateStr(Date.now() - 25 * 86400000);
+    const start = twDateStr(Date.now() - 45 * 86400000);
     const fm = await fetchJSON(
       `https://api.finmindtrade.com/api/v4/data?dataset=TaiwanFuturesInstitutionalInvestors&data_id=TX&start_date=${start}`,
       {},
@@ -542,13 +657,27 @@ async function fetchTaifexForeignOi() {
         const longOI = num(row.long_open_interest_balance_volume);
         const shortOI = num(row.short_open_interest_balance_volume);
         if (longOI == null || shortOI == null) continue;
-        const netOI = longOI - shortOI;
+        const longAmt = num(row.long_open_interest_balance_amount);
+        const shortAmt = num(row.short_open_interest_balance_amount);
+        const tradeLong = num(row.long_deal_volume);
+        const tradeShort = num(row.short_deal_volume);
+        const entry = {
+          longOI,
+          shortOI,
+          netOI: longOI - shortOI,
+          longAmt,
+          shortAmt,
+          netAmt: longAmt != null && shortAmt != null ? longAmt - shortAmt : null,
+          tradeLong,
+          tradeShort,
+          tradeNet: tradeLong != null && tradeShort != null ? tradeLong - tradeShort : null,
+        };
         if (!byDate.has(date)) byDate.set(date, {});
         const d = byDate.get(date);
         const role = String(row.institutional_investors || '');
-        if (role.includes('外資')) d.foreign = { longOI, shortOI, netOI };
-        else if (role.includes('投信')) d.trust = { longOI, shortOI, netOI };
-        else if (role.includes('自營')) d.dealer = { longOI, shortOI, netOI };
+        if (role.includes('外資')) d.foreign = entry;
+        else if (role.includes('投信')) d.trust = entry;
+        else if (role.includes('自營')) d.dealer = entry;
       }
       sourceLabel = 'FinMind / 期交所';
     }
@@ -559,14 +688,77 @@ async function fetchTaifexForeignOi() {
     .sort();
   if (!dates.length) throw new Error('TAIFEX Foreign OI: no data');
 
-  const latestDate = dates[dates.length - 1];
-  const latest = byDate.get(latestDate);
-  const prevDate = dates.length >= 2 ? dates[dates.length - 2] : null;
-  const prevDay = prevDate ? byDate.get(prevDate) : null;
+  const kToYi = (k) => (k != null ? +(k / 1e5).toFixed(2) : null);
+  const buildDayRecord = (date, cur, prevD) => {
+    const roles = [
+      ['dealer', '自營商'],
+      ['trust', '投信'],
+      ['foreign', '外資及陸資'],
+    ];
+    const rows = [];
+    let totLong = 0, totShort = 0, totNet = 0, totTradeNet = 0, totNetAmt = 0;
+    let hasTrade = false, hasAmt = false;
+    let prevTotNet = 0, hasPrevTot = Boolean(prevD);
 
-  const netOI = latest.foreign.netOI;
-  const prevNetOI = prevDay ? prevDay.foreign.netOI : netOI;
-  const chg = prevDay ? netOI - prevNetOI : 0;
+    for (const [k, label] of roles) {
+      const c = cur[k];
+      if (!c) continue;
+      const p = prevD?.[k];
+      const chg = p ? c.netOI - p.netOI : null;
+      totLong += c.longOI;
+      totShort += c.shortOI;
+      totNet += c.netOI;
+      if (p) prevTotNet += p.netOI;
+      else hasPrevTot = false;
+      if (c.tradeNet != null) { totTradeNet += c.tradeNet; hasTrade = true; }
+      if (c.netAmt != null) { totNetAmt += c.netAmt; hasAmt = true; }
+      rows.push({
+        role: label,
+        longOI: c.longOI,
+        shortOI: c.shortOI,
+        netOI: c.netOI,
+        chg,
+        netAmtYi: kToYi(c.netAmt),
+        tradeNet: c.tradeNet ?? null,
+      });
+    }
+    const totalChg = hasPrevTot ? totNet - prevTotNet : null;
+    rows.push({
+      role: '合計',
+      longOI: totLong,
+      shortOI: totShort,
+      netOI: totNet,
+      chg: totalChg,
+      netAmtYi: hasAmt ? kToYi(totNetAmt) : null,
+      tradeNet: hasTrade ? totTradeNet : null,
+    });
+
+    const fChg = prevD?.foreign ? cur.foreign.netOI - prevD.foreign.netOI : null;
+    const tChg = cur.trust && prevD?.trust ? cur.trust.netOI - prevD.trust.netOI : null;
+    const dChg = cur.dealer && prevD?.dealer ? cur.dealer.netOI - prevD.dealer.netOI : null;
+    return {
+      date,
+      foreign: cur.foreign.netOI,
+      foreignChg: fChg,
+      longOI: cur.foreign.longOI,
+      shortOI: cur.foreign.shortOI,
+      foreignAmtYi: kToYi(cur.foreign.netAmt),
+      trust: cur.trust?.netOI ?? null,
+      trustChg: tChg,
+      dealer: cur.dealer?.netOI ?? null,
+      dealerChg: dChg,
+      total: totNet,
+      totalChg,
+      net: cur.foreign.netOI,
+      chg: fChg ?? 0,
+      rows,
+    };
+  };
+
+  const allHistory = dates.map((d, i) => buildDayRecord(d, byDate.get(d), i > 0 ? byDate.get(dates[i - 1]) : null));
+  const history = allHistory.slice(-30);
+  const latestRec = allHistory[allHistory.length - 1];
+  const prevRec = allHistory.length >= 2 ? allHistory[allHistory.length - 2] : null;
 
   return {
     key: 'FUT_OI',
@@ -574,14 +766,20 @@ async function fetchTaifexForeignOi() {
     symbol: 'TAIFEX TXF Foreign OI',
     group: 'twchip',
     currency: '口',
-    price: netOI,
-    prevClose: prevNetOI,
-    chg,
-    longOI: latest.foreign.longOI,
-    shortOI: latest.foreign.shortOI,
-    trustNetOI: latest.trust?.netOI ?? null,
-    dealerNetOI: latest.dealer?.netOI ?? null,
-    date: latestDate,
+    price: latestRec.foreign,
+    prevClose: prevRec ? prevRec.foreign : latestRec.foreign,
+    chg: latestRec.foreignChg ?? 0,
+    longOI: latestRec.longOI,
+    shortOI: latestRec.shortOI,
+    trustNetOI: latestRec.trust,
+    trustChg: latestRec.trustChg,
+    dealerNetOI: latestRec.dealer,
+    dealerChg: latestRec.dealerChg,
+    totalNetOI: latestRec.total,
+    totalChg: latestRec.totalChg,
+    rows: latestRec.rows,
+    history,
+    date: latestRec.date,
     time: Date.now(),
     tz: 'Asia/Taipei',
     source: sourceLabel,
@@ -867,21 +1065,22 @@ async function main() {
     ['INST', fetchTwseInst, 'TWSE Inst'],
     ['FUT_OI', fetchTaifexForeignOi, 'TAIFEX Foreign OI'],
   ]) {
+    const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[key] : null;
     try {
-      const item = await fn();
-      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[key] : null;
-      const prevHist = Array.isArray(old?.history) ? old.history : [];
-      const entry = key === 'MARGIN'
-        ? { date: item.date, v: item.price, chg: item.chg }
-        : key === 'INST'
-        ? { date: item.date, v: item.foreignYi, total: item.totalYi, exact: true }
-        : { date: item.date, net: item.price, chg: item.chg, longOI: item.longOI, shortOI: item.shortOI };
-      const filtered = prevHist.filter((h) => h.date !== item.date && (key !== 'INST' || h.exact));
-      item.history = [...filtered, entry].slice(-30);
+      const item = await fn(old);
+      if (!Array.isArray(item.history) || !item.history.length) {
+        const prevHist = Array.isArray(old?.history) ? old.history : [];
+        const entry = key === 'MARGIN'
+          ? { date: item.date, v: item.price, chg: item.chg }
+          : key === 'INST'
+          ? { date: item.date, v: item.foreignYi, total: item.totalYi, exact: true }
+          : { date: item.date, net: item.price, chg: item.chg, longOI: item.longOI, shortOI: item.shortOI };
+        const filtered = prevHist.filter((h) => h.date !== item.date && (key !== 'INST' || h.exact));
+        item.history = [...filtered, entry].slice(-30);
+      }
       quotes[key] = item;
     } catch (e) {
       errors.push(`${label}: ${e.message}`);
-      const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.[key] : null;
       if (old) quotes[key] = { ...old, stale: true };
     }
   }

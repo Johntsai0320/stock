@@ -25,6 +25,9 @@
     limit: PAGE_SIZE,
     check: loadJson(CHECK_KEY, { ticker: '', checked: {} }),
     regimeFlags: loadJson(REGIME_KEY, { marginHigh: false, zeusLost: false }),
+    chipSheet: null,
+    chipDate: null,
+    instUnit: 'yi',
   };
 
   function loadJson(key, fallback) {
@@ -200,6 +203,55 @@
     return `${d.slice(0, 4)}/${d.slice(4, 6)}/${d.slice(6, 8)}`;
   }
 
+  function fmtRocDateTW(d) {
+    if (!d || !/^\d{8}$/.test(d)) return '';
+    const rocY = Number(d.slice(0, 4)) - 1911;
+    return `${rocY}年${d.slice(4, 6)}月${d.slice(6, 8)}日`;
+  }
+
+  function clsSign(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '';
+    if (v > 0) return 'up';
+    if (v < 0) return 'down';
+    return '';
+  }
+
+  function fmtInt(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    return Math.round(v).toLocaleString('en-US');
+  }
+
+  function fmtSignedInt(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    const n = Math.round(v);
+    if (n === 0) return '0';
+    return `${n > 0 ? '+' : '−'}${Math.abs(n).toLocaleString('en-US')}`;
+  }
+
+  function fmtYiPlain(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    return Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function fmtYiSignedNum(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+    if (Math.abs(v) < 0.005) return '0.00';
+    return `${v > 0 ? '+' : '−'}${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  const CHIP_META = {
+    INST: {
+      title: '三大法人買賣金額統計表',
+      extLabel: '證交所原頁 ↗',
+      extUrl: 'https://www.twse.com.tw/zh/trading/foreign/bfi82u.html',
+    },
+    FUT_OI: {
+      title: '台指期貨三大法人未平倉多空淨額',
+      extLabel: '期交所原頁 ↗',
+      extUrl: 'https://www.taifex.com.tw/cht/3/futContractsDate',
+    },
+  };
+
   function analyzeChips(quotes, tw) {
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
@@ -331,7 +383,7 @@
     const iHtml = inst && typeof inst.foreignYi === 'number' ? (() => {
       const fCls = inst.foreignYi > 0 ? 'up' : inst.foreignYi < 0 ? 'down' : '';
       return `
-        <article class="g-chip-card">
+        <article class="g-chip-card g-chip-clickable" role="button" tabindex="0" data-chip-sheet="INST" aria-label="檢視三大法人買賣金額統計表">
           <div class="g-reg-top">
             <strong>外資買賣超 <small class="muted">${esc(fmtDateTW(inst.date))}</small></strong>
             <span class="g-reg-badge st-${instSignal.cls}">${esc(instSignal.label)}</span>
@@ -340,13 +392,17 @@
             <span class="g-reg-price num ${fCls}">${fmtYi(inst.foreignYi)}</span>
             <span class="g-chip-chg num">三大合計 ${fmtYi(inst.totalYi)}</span>
           </div>
-          <div class="g-chip-sub">投信 ${fmtYi(inst.trustYi)} · 自營 ${fmtYi(inst.dealerYi)} · ${esc(inst.source || '證交所')}${inst.stale ? '（盤中沿用前日）' : ''}</div>
+          <div class="g-chip-sub g-chip-sub-row">
+            <span>投信 ${fmtYi(inst.trustYi)} · 自營 ${fmtYi(inst.dealerYi)} · ${esc(inst.source || '證交所')}${inst.stale ? '（盤中沿用前日）' : ''}</span>
+            <span class="g-chip-hint">統計表 ▸</span>
+          </div>
         </article>
       `;
     })() : `
-      <article class="g-chip-card">
+      <article class="g-chip-card g-chip-clickable" role="button" tabindex="0" data-chip-sheet="INST" aria-label="檢視三大法人買賣金額統計表">
         <div class="g-reg-top"><strong>外資買賣超</strong><span class="badge">待盤後更新</span></div>
         <div class="g-reg-price">—</div>
+        <div class="g-chip-sub g-chip-sub-row"><span>點擊檢視三大法人統計表</span><span class="g-chip-hint">統計表 ▸</span></div>
       </article>
     `;
 
@@ -359,7 +415,7 @@
       const shortStr = futOi.shortOI != null ? futOi.shortOI.toLocaleString('en-US') : '—';
       const trustTxt = typeof futOi.trustNetOI === 'number' ? ` · 投信 ${fmtContracts(futOi.trustNetOI)}` : '';
       return `
-        <article class="g-chip-card">
+        <article class="g-chip-card g-chip-clickable" role="button" tabindex="0" data-chip-sheet="FUT_OI" aria-label="檢視台指期貨三大法人未平倉多空淨額">
           <div class="g-reg-top">
             <strong>外資期貨多空口數淨額 <small class="muted">${esc(fmtDateTW(futOi.date))}</small></strong>
             <span class="g-reg-badge st-${futOiSignal.cls}">${esc(futOiSignal.label)}</span>
@@ -368,13 +424,17 @@
             <span class="g-reg-price num ${netCls}">${fmtContracts(net)}</span>
             <span class="g-chip-chg num ${chgCls}">單日 ${fmtContracts(chg)}</span>
           </div>
-          <div class="g-chip-sub">多單 ${longStr} · 空單 ${shortStr} 口${trustTxt} · ${esc(futOi.source || '期交所')}${futOi.stale ? '（盤中沿用前日）' : ''}</div>
+          <div class="g-chip-sub g-chip-sub-row">
+            <span>多單 ${longStr} · 空單 ${shortStr} 口${trustTxt} · ${esc(futOi.source || '期交所')}${futOi.stale ? '（盤中沿用前日）' : ''}</span>
+            <span class="g-chip-hint">未平倉表 ▸</span>
+          </div>
         </article>
       `;
     })() : `
-      <article class="g-chip-card">
+      <article class="g-chip-card g-chip-clickable" role="button" tabindex="0" data-chip-sheet="FUT_OI" aria-label="檢視台指期貨三大法人未平倉多空淨額">
         <div class="g-reg-top"><strong>外資期貨多空口數淨額</strong><span class="badge">待盤後更新</span></div>
         <div class="g-reg-price">—</div>
+        <div class="g-chip-sub g-chip-sub-row"><span>點擊檢視台指期未平倉表</span><span class="g-chip-hint">未平倉表 ▸</span></div>
       </article>
     `;
 
@@ -435,6 +495,481 @@
         fValEl.className = 'hl-value';
         fDetEl.textContent = '待盤後公布';
       }
+    }
+  }
+
+  // ---------------- 台股籌碼詳細統計表 Bottom Sheet ----------------
+  function renderBarChartSvg(items, { title, activeDate, formatVal }) {
+    const valid = items.filter((it) => it && it.date && typeof it.val === 'number' && Number.isFinite(it.val));
+    if (valid.length < 2) return '';
+    const W = 600;
+    const H = 120;
+    const padY = 12;
+    const usableH = H - padY * 2;
+    const vals = valid.map((it) => it.val);
+    const maxPos = Math.max(0, ...vals);
+    const minNeg = Math.min(0, ...vals);
+    const span = maxPos - minNeg || 1;
+    const zeroY = padY + (maxPos / span) * usableH;
+    const step = W / valid.length;
+    const bw = Math.max(4, Math.min(20, step * 0.72));
+
+    const selItem = valid.find((it) => it.date === activeDate) || valid[valid.length - 1];
+    const rects = valid.map((it, i) => {
+      const x = i * step + (step - bw) / 2;
+      const barH = Math.max(2, (Math.abs(it.val) / span) * usableH);
+      const y = it.val >= 0 ? zeroY - barH : zeroY;
+      const fill = it.val > 0 ? 'var(--up)' : it.val < 0 ? 'var(--down)' : 'var(--flat)';
+      const isSel = it.date === selItem.date;
+      const op = isSel ? '1' : '0.68';
+      const stroke = isSel ? 'var(--accent)' : 'none';
+      const sw = isSel ? '1.6' : '0';
+      return `<rect class="bar-rect" data-chip-date="${esc(it.date)}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${barH.toFixed(1)}" rx="2" fill="${fill}" opacity="${op}" stroke="${stroke}" stroke-width="${sw}"><title>${esc(fmtDateTW(it.date))}：${esc(formatVal(it.val))}</title></rect>`;
+    }).join('');
+
+    return `
+      <div class="chip-chart-box">
+        <div class="chip-chart-head">
+          <span>${esc(title)}</span>
+          <span class="num">${esc(fmtDateTW(selItem.date))} <b class="${clsSign(selItem.val)}">${esc(formatVal(selItem.val))}</b></span>
+        </div>
+        <svg class="chip-bar-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(title)}">
+          <line x1="0" y1="${zeroY.toFixed(1)}" x2="${W}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.22)" stroke-dasharray="3 3" stroke-width="1" />
+          ${rects}
+        </svg>
+        <div class="chip-bar-axis num">
+          <span>${esc(fmtDateTW(valid[0].date))}</span>
+          <span>點擊柱狀或下方日期檢視當日明細</span>
+          <span>${esc(fmtDateTW(valid[valid.length - 1].date))}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderInstSheet(inst) {
+    const subEl = $('#chip-sheet-sub');
+    if (!inst || typeof inst.foreignYi !== 'number') {
+      if (subEl) subEl.textContent = '臺灣證券交易所 BFI82U · 待盤後更新';
+      return '<div class="chip-empty">三大法人買賣金額資料尚待盤後公布，您亦可點擊右上角「證交所原頁 ↗」直接查閱。</div>';
+    }
+
+    const history = Array.isArray(inst.history) ? inst.history : [];
+    const fallbackActive = {
+      date: inst.date || '',
+      foreignYi: inst.foreignYi,
+      trustYi: inst.trustYi,
+      dealerSelfYi: inst.dealerSelfYi,
+      dealerHedgeYi: inst.dealerHedgeYi,
+      dealerYi: inst.dealerYi,
+      totalYi: inst.totalYi,
+      rows: Array.isArray(inst.rows) ? inst.rows : [],
+    };
+    let active = gState.chipDate
+      ? history.find((h) => h.date === gState.chipDate)
+      : history.find((h) => h.date === inst.date) || fallbackActive;
+    if (!active) active = fallbackActive;
+    if (active.date === inst.date && Array.isArray(inst.rows) && inst.rows.length) {
+      active = { ...active, rows: inst.rows };
+    }
+
+    const isLatest = !active.date || active.date === inst.date;
+    const rocStr = fmtRocDateTW(active.date) || fmtDateTW(active.date);
+    if (subEl) {
+      subEl.textContent = `${rocStr} · ${inst.source || '證交所三大法人'}${inst.stale && isLatest ? '（盤中沿用前日）' : ''}${!isLatest ? '（歷史日明細）' : ''}`;
+    }
+
+    const isNtd = gState.instUnit === 'ntd';
+    const unitTag = isNtd ? '元' : '億';
+    const rows = Array.isArray(active.rows) && active.rows.length
+      ? active.rows
+      : [
+          ...(typeof active.dealerSelfYi === 'number' ? [{ name: '自營商(自行買賣)', buy: null, sell: null, diff: Math.round(active.dealerSelfYi * 1e8) }] : []),
+          ...(typeof active.dealerHedgeYi === 'number' ? [{ name: '自營商(避險)', buy: null, sell: null, diff: Math.round(active.dealerHedgeYi * 1e8) }] : []),
+          ...(typeof active.dealerSelfYi !== 'number' && typeof active.dealerYi === 'number' ? [{ name: '自營商合計', buy: null, sell: null, diff: Math.round(active.dealerYi * 1e8) }] : []),
+          { name: '投信', buy: null, sell: null, diff: Math.round((active.trustYi || 0) * 1e8) },
+          { name: '外資及陸資(不含外資自營商)', buy: null, sell: null, diff: Math.round((active.foreignYi || 0) * 1e8) },
+          { name: '合計', buy: null, sell: null, diff: Math.round((active.totalYi || 0) * 1e8) },
+        ];
+
+    const dealerSub = typeof active.dealerSelfYi === 'number' && typeof active.dealerHedgeYi === 'number'
+      ? `自行 ${fmtYiSignedNum(active.dealerSelfYi)} · 避險 ${fmtYiSignedNum(active.dealerHedgeYi)}`
+      : '自行＋避險';
+
+    const kpiHtml = `
+      <div class="chip-kpi-grid">
+        <div class="chip-kpi is-primary">
+          <div class="chip-kpi-label">外資及陸資</div>
+          <div class="chip-kpi-val num ${clsSign(active.foreignYi)}">${fmtYi(active.foreignYi)}</div>
+          <div class="chip-kpi-sub">不含外資自營商</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">投信</div>
+          <div class="chip-kpi-val num ${clsSign(active.trustYi)}">${fmtYi(active.trustYi)}</div>
+          <div class="chip-kpi-sub">買賣差額</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">自營商合計</div>
+          <div class="chip-kpi-val num ${clsSign(active.dealerYi)}">${fmtYi(active.dealerYi)}</div>
+          <div class="chip-kpi-sub num">${esc(dealerSub)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">三大法人合計</div>
+          <div class="chip-kpi-val num ${clsSign(active.totalYi)}">${fmtYi(active.totalYi)}</div>
+          <div class="chip-kpi-sub num">${esc(fmtDateTW(active.date))}</div>
+        </div>
+      </div>
+    `;
+
+    const tableRowsHtml = rows.map((r) => {
+      const rCls = r.name === '合計'
+        ? 'is-total'
+        : r.name.startsWith('外資及陸資')
+          ? 'is-highlight'
+          : r.name === '外資自營商'
+            ? 'is-subrow'
+            : '';
+      const buyTxt = typeof r.buy === 'number' ? (isNtd ? fmtInt(r.buy) : fmtYiPlain(r.buy / 1e8)) : '—';
+      const sellTxt = typeof r.sell === 'number' ? (isNtd ? fmtInt(r.sell) : fmtYiPlain(r.sell / 1e8)) : '—';
+      const diffTxt = typeof r.diff === 'number' ? (isNtd ? fmtSignedInt(r.diff) : fmtYiSignedNum(r.diff / 1e8)) : '—';
+      return `
+        <tr class="${rCls}">
+          <td>${esc(r.name)}</td>
+          <td>${buyTxt}</td>
+          <td>${sellTxt}</td>
+          <td class="${clsSign(r.diff)}">${diffTxt}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const mainTableHtml = `
+      <div class="chip-sec-bar">
+        <div class="chip-sec-title">三大法人買賣金額統計表 <small>${esc(rocStr)}</small></div>
+        <div class="chip-sec-controls">
+          ${!isLatest ? '<button type="button" class="chip-back-btn" data-chip-latest="1">回到最新</button>' : ''}
+          <div class="chip-unit-switch" role="group" aria-label="金額單位切換">
+            <button type="button" class="chip-unit-btn ${!isNtd ? 'active' : ''}" data-inst-unit="yi" aria-pressed="${!isNtd}">億元</button>
+            <button type="button" class="chip-unit-btn ${isNtd ? 'active' : ''}" data-inst-unit="ntd" aria-pressed="${isNtd}">新台幣元</button>
+          </div>
+        </div>
+      </div>
+      <div class="chip-table-wrap">
+        <table class="chip-table">
+          <thead>
+            <tr>
+              <th>單位名稱</th>
+              <th>買進金額（${unitTag}）</th>
+              <th>賣出金額（${unitTag}）</th>
+              <th>買賣差額（${unitTag}）</th>
+            </tr>
+          </thead>
+          <tbody>${tableRowsHtml}</tbody>
+        </table>
+      </div>
+      <p class="chip-note">註：依臺灣證券交易所 BFI82U 統計口徑，「外資自營商」買賣金額已計入「自營商」內，三大法人合計＝自營商(自行＋避險)＋投信＋外資及陸資(不含外資自營商)。</p>
+    `;
+
+    const chartHtml = renderBarChartSvg(
+      history.map((h) => ({ date: h.date, val: typeof h.foreignYi === 'number' ? h.foreignYi : h.v })),
+      {
+        title: `近 ${history.length} 交易日 外資買賣超（億）`,
+        activeDate: active.date,
+        formatVal: fmtYi,
+      }
+    );
+
+    let histHtml = '';
+    if (history.length) {
+      const fVal = (h) => (typeof h.foreignYi === 'number' ? h.foreignYi : h.v);
+      const sum5 = history.length >= 5
+        ? history.slice(-5).reduce((a, h) => a + (fVal(h) || 0), 0)
+        : null;
+      const sum20 = history.length >= 20
+        ? history.slice(-20).reduce((a, h) => a + (fVal(h) || 0), 0)
+        : null;
+      const sumPills = [
+        sum5 !== null ? `<span class="chip-sum-pill num">外資近5日<b class="${clsSign(sum5)}">${fmtYi(sum5)}</b></span>` : '',
+        sum20 !== null ? `<span class="chip-sum-pill num">近20日<b class="${clsSign(sum20)}">${fmtYi(sum20)}</b></span>` : '',
+      ].filter(Boolean).join('');
+
+      const histRows = [...history].reverse().map((h) => {
+        const fv = fVal(h);
+        const tv = h.trustYi;
+        const dv = h.dealerYi;
+        const tot = typeof h.totalYi === 'number' ? h.totalYi : h.total;
+        return `
+          <tr data-chip-date="${esc(h.date)}" class="${h.date === active.date ? 'is-selected' : ''}">
+            <td>${esc(fmtDateTW(h.date))}</td>
+            <td class="${clsSign(fv)}">${fmtYiSignedNum(fv)}</td>
+            <td class="${clsSign(tv)}">${fmtYiSignedNum(tv)}</td>
+            <td class="${clsSign(dv)}">${fmtYiSignedNum(dv)}</td>
+            <td class="${clsSign(tot)}">${fmtYiSignedNum(tot)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      histHtml = `
+        <div class="chip-sec-bar">
+          <div class="chip-sec-title">近 ${history.length} 交易日逐日統計 <small>單位：億元</small></div>
+          ${sumPills ? `<div class="chip-sum-pills">${sumPills}</div>` : ''}
+        </div>
+        <div class="chip-table-wrap chip-table-hist-wrap">
+          <table class="chip-table chip-table-hist">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>外資</th>
+                <th>投信</th>
+                <th>自營商</th>
+                <th>三大合計</th>
+              </tr>
+            </thead>
+            <tbody>${histRows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    return kpiHtml + mainTableHtml + chartHtml + histHtml;
+  }
+
+  function renderFutOiSheet(futOi) {
+    const subEl = $('#chip-sheet-sub');
+    if (!futOi || typeof futOi.price !== 'number') {
+      if (subEl) subEl.textContent = '臺灣期貨交易所 TXF · 待盤後更新';
+      return '<div class="chip-empty">台指期貨三大法人未平倉資料尚待盤後公布，您亦可點擊右上角「期交所原頁 ↗」直接查閱。</div>';
+    }
+
+    const history = Array.isArray(futOi.history) ? futOi.history : [];
+    const fallbackActive = {
+      date: futOi.date || '',
+      foreign: futOi.price,
+      foreignChg: futOi.chg,
+      longOI: futOi.longOI,
+      shortOI: futOi.shortOI,
+      trust: futOi.trustNetOI,
+      trustChg: futOi.trustChg,
+      dealer: futOi.dealerNetOI,
+      dealerChg: futOi.dealerChg,
+      total: futOi.totalNetOI,
+      totalChg: futOi.totalChg,
+      rows: Array.isArray(futOi.rows) ? futOi.rows : [],
+    };
+    let active = gState.chipDate
+      ? history.find((h) => h.date === gState.chipDate)
+      : history.find((h) => h.date === futOi.date) || fallbackActive;
+    if (!active) active = fallbackActive;
+    if (active.date === futOi.date && Array.isArray(futOi.rows) && futOi.rows.length) {
+      active = { ...active, rows: futOi.rows };
+    }
+
+    const isLatest = !active.date || active.date === futOi.date;
+    const rocStr = fmtRocDateTW(active.date) || fmtDateTW(active.date);
+    if (subEl) {
+      subEl.textContent = `${rocStr} · 臺股期貨（TXF） · ${futOi.source || '期交所'}${futOi.stale && isLatest ? '（盤中沿用前日）' : ''}${!isLatest ? '（歷史日明細）' : ''}`;
+    }
+
+    const fNet = typeof active.foreign === 'number' ? active.foreign : active.net;
+    const fChg = typeof active.foreignChg === 'number' ? active.foreignChg : active.chg;
+    const tNet = active.trust;
+    const tChg = active.trustChg;
+    const dNet = active.dealer;
+    const dChg = active.dealerChg;
+    const totNet = active.total;
+    const totChg = active.totalChg;
+
+    const kpiHtml = `
+      <div class="chip-kpi-grid">
+        <div class="chip-kpi is-primary">
+          <div class="chip-kpi-label">外資及陸資</div>
+          <div class="chip-kpi-val num ${clsSign(fNet)}">${fmtContracts(fNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(fChg)}">單日 ${fmtContracts(fChg)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">投信</div>
+          <div class="chip-kpi-val num ${clsSign(tNet)}">${fmtContracts(tNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(tChg)}">單日 ${fmtContracts(tChg)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">自營商</div>
+          <div class="chip-kpi-val num ${clsSign(dNet)}">${fmtContracts(dNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(dChg)}">單日 ${fmtContracts(dChg)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">三大法人合計</div>
+          <div class="chip-kpi-val num ${clsSign(totNet)}">${fmtContracts(totNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(totChg)}">單日 ${fmtContracts(totChg)}</div>
+        </div>
+      </div>
+    `;
+
+    const rows = Array.isArray(active.rows) && active.rows.length
+      ? active.rows
+      : [
+          ...(typeof dNet === 'number' ? [{ role: '自營商', longOI: null, shortOI: null, netOI: dNet, chg: dChg ?? null, netAmtYi: null, tradeNet: null }] : []),
+          ...(typeof tNet === 'number' ? [{ role: '投信', longOI: null, shortOI: null, netOI: tNet, chg: tChg ?? null, netAmtYi: null, tradeNet: null }] : []),
+          { role: '外資及陸資', longOI: active.longOI ?? null, shortOI: active.shortOI ?? null, netOI: fNet, chg: fChg ?? null, netAmtYi: active.foreignAmtYi ?? null, tradeNet: null },
+          ...(typeof totNet === 'number' ? [{ role: '合計', longOI: null, shortOI: null, netOI: totNet, chg: totChg ?? null, netAmtYi: null, tradeNet: null }] : []),
+        ];
+
+    const tableRowsHtml = rows.map((r) => {
+      const rCls = r.role === '合計'
+        ? 'is-total'
+        : r.role.includes('外資')
+          ? 'is-highlight'
+          : '';
+      return `
+        <tr class="${rCls}">
+          <td>${esc(r.role)}</td>
+          <td>${fmtInt(r.longOI)}</td>
+          <td>${fmtInt(r.shortOI)}</td>
+          <td class="${clsSign(r.netOI)}">${fmtSignedInt(r.netOI)}</td>
+          <td class="${clsSign(r.chg)}">${fmtSignedInt(r.chg)}</td>
+          <td class="${clsSign(r.netAmtYi)}">${typeof r.netAmtYi === 'number' ? fmtYiSignedNum(r.netAmtYi) : '—'}</td>
+          <td class="${clsSign(r.tradeNet)}">${fmtSignedInt(r.tradeNet)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const mainTableHtml = `
+      <div class="chip-sec-bar">
+        <div class="chip-sec-title">臺股期貨（TXF）三大法人未平倉多空淨額 <small>${esc(rocStr)}</small></div>
+        <div class="chip-sec-controls">
+          ${!isLatest ? '<button type="button" class="chip-back-btn" data-chip-latest="1">回到最新</button>' : ''}
+        </div>
+      </div>
+      <div class="chip-table-wrap">
+        <table class="chip-table">
+          <thead>
+            <tr>
+              <th>身份別</th>
+              <th>多方未平倉</th>
+              <th>空方未平倉</th>
+              <th>多空淨額（口）</th>
+              <th>單日增減</th>
+              <th>淨額金額（億）</th>
+              <th>當日交易淨額</th>
+            </tr>
+          </thead>
+          <tbody>${tableRowsHtml}</tbody>
+        </table>
+      </div>
+      <p class="chip-note">註：資料來源為臺灣期貨交易所「臺股期貨（TXF）三大法人區分各期貨契約」日表；單日增減為當日與前一交易日之未平倉多空淨額差，淨額契約金額由千元換算為億元。</p>
+    `;
+
+    const chartHtml = renderBarChartSvg(
+      history.map((h) => ({ date: h.date, val: typeof h.foreign === 'number' ? h.foreign : h.net })),
+      {
+        title: `近 ${history.length} 交易日 外資台指期未平倉多空淨額（口）`,
+        activeDate: active.date,
+        formatVal: fmtContracts,
+      }
+    );
+
+    let histHtml = '';
+    if (history.length) {
+      const fVal = (h) => (typeof h.foreign === 'number' ? h.foreign : h.net);
+      const latestVal = fVal(history[history.length - 1]);
+      const chg5 = history.length >= 6 && typeof latestVal === 'number' && typeof fVal(history[history.length - 6]) === 'number'
+        ? latestVal - fVal(history[history.length - 6])
+        : null;
+      const chg20 = history.length >= 21 && typeof latestVal === 'number' && typeof fVal(history[history.length - 21]) === 'number'
+        ? latestVal - fVal(history[history.length - 21])
+        : null;
+      const sumPills = [
+        chg5 !== null ? `<span class="chip-sum-pill num">外資近5日<b class="${clsSign(chg5)}">${fmtContracts(chg5)}</b></span>` : '',
+        chg20 !== null ? `<span class="chip-sum-pill num">近20日<b class="${clsSign(chg20)}">${fmtContracts(chg20)}</b></span>` : '',
+      ].filter(Boolean).join('');
+
+      const fmtCellWithChg = (val, chg) => {
+        if (typeof val !== 'number') return '—';
+        const chgHtml = typeof chg === 'number'
+          ? `<span class="chip-cell-chg ${clsSign(chg)}">(${fmtSignedInt(chg)})</span>`
+          : '';
+        return `<span class="${clsSign(val)}">${fmtSignedInt(val)}</span>${chgHtml}`;
+      };
+
+      const histRows = [...history].reverse().map((h) => {
+        const fv = fVal(h);
+        const fc = typeof h.foreignChg === 'number' ? h.foreignChg : h.chg;
+        return `
+          <tr data-chip-date="${esc(h.date)}" class="${h.date === active.date ? 'is-selected' : ''}">
+            <td>${esc(fmtDateTW(h.date))}</td>
+            <td>${fmtCellWithChg(fv, fc)}</td>
+            <td>${fmtCellWithChg(h.trust, h.trustChg)}</td>
+            <td>${fmtCellWithChg(h.dealer, h.dealerChg)}</td>
+            <td class="${clsSign(h.total)}">${fmtSignedInt(h.total)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      histHtml = `
+        <div class="chip-sec-bar">
+          <div class="chip-sec-title">近 ${history.length} 交易日未平倉淨額變化 <small>單位：口（括號為單日增減）</small></div>
+          ${sumPills ? `<div class="chip-sum-pills">${sumPills}</div>` : ''}
+        </div>
+        <div class="chip-table-wrap chip-table-hist-wrap">
+          <table class="chip-table chip-table-hist">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>外資淨額（日增減）</th>
+                <th>投信淨額（日增減）</th>
+                <th>自營商（日增減）</th>
+                <th>三大合計</th>
+              </tr>
+            </thead>
+            <tbody>${histRows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    return kpiHtml + mainTableHtml + chartHtml + histHtml;
+  }
+
+  function renderChipSheet(quotes) {
+    const kind = gState.chipSheet;
+    if (!kind || !CHIP_META[kind]) return;
+    const meta = CHIP_META[kind];
+    const titleEl = $('#chip-sheet-title');
+    const extEl = $('#chip-sheet-ext');
+    const bodyEl = $('#chip-sheet-body');
+    if (titleEl) titleEl.textContent = meta.title;
+    if (extEl) {
+      extEl.textContent = meta.extLabel;
+      extEl.href = meta.extUrl;
+    }
+    if (!bodyEl) return;
+    const q = quotes || window.__STOCKDASH_QUOTES__ || {};
+    bodyEl.innerHTML = kind === 'INST'
+      ? renderInstSheet(q.INST)
+      : renderFutOiSheet(q.FUT_OI);
+  }
+
+  function openChipSheet(kind) {
+    if (!CHIP_META[kind]) return;
+    const sheet = $('#chip-sheet');
+    const backdrop = $('#chip-sheet-backdrop');
+    if (!sheet || !backdrop) return;
+    gState.chipSheet = kind;
+    gState.chipDate = null;
+    renderChipSheet(window.__STOCKDASH_QUOTES__ || {});
+    sheet.hidden = false;
+    backdrop.hidden = false;
+    sheet.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeChipSheet() {
+    gState.chipSheet = null;
+    gState.chipDate = null;
+    const sheet = $('#chip-sheet');
+    const backdrop = $('#chip-sheet-backdrop');
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    const stockSheet = $('#sheet');
+    if (!stockSheet || stockSheet.hidden) {
+      document.body.style.overflow = '';
     }
   }
 
@@ -756,11 +1291,88 @@
       if (gState.view === 'gooaye') {
         renderRegimeSection(q);
       }
+      if (gState.chipSheet) {
+        renderChipSheet(q);
+      }
     });
     if (window.__STOCKDASH_QUOTES__) {
       renderChipHighlight(window.__STOCKDASH_QUOTES__);
       renderChipCards('#grid-twchip', window.__STOCKDASH_QUOTES__);
     }
+
+    document.addEventListener('click', (e) => {
+      const trigger = e.target?.closest?.('[data-chip-sheet]');
+      if (!trigger || e.target?.closest?.('a')) return;
+      const kind = trigger.dataset?.chipSheet || trigger.getAttribute?.('data-chip-sheet');
+      if (kind) openChipSheet(kind);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && gState.chipSheet) {
+        closeChipSheet();
+        return;
+      }
+      if (e.key === 'Enter' || e.key === ' ') {
+        const trigger = e.target?.closest?.('[data-chip-sheet]');
+        if (trigger) {
+          const kind = trigger.dataset?.chipSheet || trigger.getAttribute?.('data-chip-sheet');
+          if (kind) {
+            e.preventDefault();
+            openChipSheet(kind);
+          }
+        }
+      }
+    });
+
+    const chipBody = $('#chip-sheet-body');
+    if (chipBody) {
+      chipBody.addEventListener('click', (e) => {
+        const unitBtn = e.target?.closest?.('[data-inst-unit]');
+        if (unitBtn) {
+          const nextUnit = (unitBtn.dataset?.instUnit || unitBtn.getAttribute?.('data-inst-unit')) === 'ntd' ? 'ntd' : 'yi';
+          if (gState.instUnit !== nextUnit) {
+            gState.instUnit = nextUnit;
+            renderChipSheet();
+          }
+          return;
+        }
+        const latestBtn = e.target?.closest?.('[data-chip-latest]');
+        if (latestBtn) {
+          gState.chipDate = null;
+          renderChipSheet();
+          return;
+        }
+        const dateEl = e.target?.closest?.('[data-chip-date]');
+        if (dateEl) {
+          const d = dateEl.dataset?.chipDate || dateEl.getAttribute?.('data-chip-date');
+          if (d) {
+            gState.chipDate = d;
+            renderChipSheet();
+            if (dateEl.closest?.('.chip-table-hist')) {
+              const sheet = $('#chip-sheet');
+              if (sheet?.scrollTo) sheet.scrollTo({ top: 0, behavior: 'smooth' });
+              else if (sheet) sheet.scrollTop = 0;
+            }
+          }
+        }
+      });
+    }
+
+    $('#chip-sheet-close')?.addEventListener('click', closeChipSheet);
+    $('#chip-sheet-backdrop')?.addEventListener('click', closeChipSheet);
+    (() => {
+      const sheet = $('#chip-sheet');
+      if (!sheet) return;
+      let y0 = null;
+      sheet.addEventListener('touchstart', (e) => {
+        if (sheet.scrollTop <= 0 && !e.target?.closest?.('.chip-table-wrap,.chip-chart-box')) {
+          y0 = e.touches[0].clientY;
+        }
+      }, { passive: true });
+      sheet.addEventListener('touchend', (e) => {
+        if (y0 != null && e.changedTouches[0].clientY - y0 > 90) closeChipSheet();
+        y0 = null;
+      }, { passive: true });
+    })();
 
     const toggleWrap = $('#gooaye-regime-toggles');
     if (toggleWrap) {

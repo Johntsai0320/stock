@@ -9,7 +9,7 @@
   'use strict';
 
   const SCHEMA_VERSION = 3;
-  const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}_2`;
+  const CACHE_KEY = `stockdash:v${SCHEMA_VERSION}_3`;
   const CACHE_MAX_AGE = 1000 * 60 * 60 * 18; // 18 小時以上的快取直接丟棄
   const SNAPSHOT_INTERVAL = 8_000;  // 每 8 秒自動抓取雲端快照（極速同步）
   const LIVE_INTERVAL = 15_000;     // 每 15 秒嘗試抓取即時報價

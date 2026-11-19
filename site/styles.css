@@ -95,7 +95,22 @@ button { font: inherit; color: inherit; }
 }
 #futoi-hl-card { grid-column: 1 / -1; }
 #fx-card { cursor: pointer; }
+.hl-clickable {
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform .18s ease, background .2s, border-color .2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.hl-clickable:hover {
+  transform: translateY(-2px);
+  border-color: hsl(42 90% 60% / .4);
+  background: linear-gradient(160deg, hsl(225 12% 17.5%), var(--card));
+}
+.hl-clickable:active { transform: scale(.985); }
 .hl-label { font-size: .74rem; color: var(--muted); letter-spacing: .03em; }
+.hl-label-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.hl-hint { font-size: .66rem; color: var(--accent); opacity: .88; font-weight: 600; white-space: nowrap; flex: none; }
+.hl-clickable:hover .hl-hint { opacity: 1; }
 .hl-value { font-size: clamp(1.35rem, 6vw, 1.8rem); font-weight: 700; letter-spacing: -.01em; margin-top: 4px; }
 .hl-value-split { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
 .hl-sub-chg { font-size: .82rem; font-weight: 600; white-space: nowrap; }
@@ -893,6 +908,227 @@ button { font: inherit; color: inherit; }
 .g-chip-chg.up { color: var(--up); }
 .g-chip-chg.down { color: var(--down); }
 .g-chip-sub { font-size: .72rem; color: var(--faint); line-height: 1.45; }
+.g-chip-sub-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.g-chip-clickable {
+  cursor: pointer;
+  transition: transform .18s ease, border-color .2s, background .2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.g-chip-clickable:hover {
+  transform: translateY(-2px);
+  border-color: hsl(42 90% 60% / .45);
+  background: linear-gradient(165deg, hsl(225 12% 17.5%) 0%, var(--card) 60%);
+}
+.g-chip-clickable:active { transform: scale(.985); }
+.g-chip-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.g-chip-hint { font-size: .68rem; color: var(--accent); font-weight: 600; white-space: nowrap; flex: none; opacity: .9; }
+.g-chip-clickable:hover .g-chip-hint { opacity: 1; }
 
+/* ---------- Chip Detail Bottom Sheet（三大法人 / 台指期未平倉統計表） ---------- */
+.chip-sheet-head-text { min-width: 0; }
+.chip-sheet-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.chip-ext-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid hsl(42 90% 60% / .38);
+  background: hsl(42 90% 60% / .1);
+  color: var(--accent);
+  font-size: .74rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.chip-ext-btn:hover { background: hsl(42 90% 60% / .2); border-color: hsl(42 90% 60% / .65); }
+.chip-sheet-body { margin-top: 12px; display: flex; flex-direction: column; gap: 14px; }
 
+.chip-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (min-width: 600px) {
+  .chip-kpi-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+.chip-kpi {
+  background: var(--card);
+  border: 1px solid hsl(225 10% 19%);
+  border-radius: 12px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.chip-kpi.is-primary {
+  border-color: hsl(42 90% 60% / .34);
+  background: linear-gradient(160deg, var(--card-hi), var(--card));
+}
+.chip-kpi-label { font-size: .7rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip-kpi-val { font-size: 1.06rem; font-weight: 700; margin-top: 3px; letter-spacing: -.01em; }
+.chip-kpi-sub { font-size: .7rem; color: var(--muted); margin-top: 2px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip-kpi-sub.up { color: var(--up); }
+.chip-kpi-sub.down { color: var(--down); }
 
+.chip-sec-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chip-sec-title {
+  font-size: .82rem;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chip-sec-title small { font-weight: 400; color: var(--muted); font-size: .72rem; }
+.chip-sec-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip-sum-pills { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip-sum-pill {
+  font-size: .7rem;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid hsl(225 10% 20%);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.chip-sum-pill b { font-weight: 700; margin-left: 3px; }
+.chip-unit-switch {
+  display: inline-flex;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+}
+.chip-unit-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: .7rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.chip-unit-btn:hover { color: var(--text); }
+.chip-unit-btn.active { background: var(--card-hi); color: var(--accent); }
+.chip-back-btn {
+  border: 1px solid hsl(42 90% 60% / .45);
+  background: hsl(42 90% 60% / .12);
+  color: var(--accent);
+  font-size: .7rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.chip-back-btn:hover { background: hsl(42 90% 60% / .22); }
+
+.chip-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--card);
+  border: 1px solid hsl(225 10% 19%);
+  border-radius: 12px;
+}
+.chip-table-hist-wrap { max-height: 290px; overflow-y: auto; }
+.chip-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .78rem;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+.chip-table th, .chip-table td {
+  padding: 9px 10px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid hsl(225 10% 18%);
+}
+.chip-table thead th {
+  font-size: .7rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: hsl(225 13% 10.5%);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.chip-table th:first-child, .chip-table td:first-child {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+.chip-table thead th:first-child { z-index: 2; background: hsl(225 13% 10.5%); }
+.chip-table tbody tr { background: var(--card); transition: background .15s; }
+.chip-table tbody tr td:first-child { background: var(--card); }
+.chip-table tbody tr:last-child td { border-bottom: 0; }
+.chip-table tbody tr.is-highlight,
+.chip-table tbody tr.is-highlight td:first-child {
+  background: color-mix(in hsl, var(--accent) 8%, var(--card));
+}
+.chip-table tbody tr.is-highlight td:first-child { font-weight: 700; color: var(--text); }
+.chip-table tbody tr.is-total,
+.chip-table tbody tr.is-total td:first-child {
+  background: hsl(225 13% 16%);
+  font-weight: 700;
+}
+.chip-table tbody tr.is-total td { border-top: 1px solid hsl(225 10% 26%); }
+.chip-table tbody tr.is-subrow td:first-child { color: var(--muted); }
+.chip-table-hist tbody tr { cursor: pointer; }
+.chip-table-hist tbody tr:hover,
+.chip-table-hist tbody tr:hover td:first-child { background: var(--card-hi); }
+.chip-table-hist tbody tr.is-selected,
+.chip-table-hist tbody tr.is-selected td:first-child {
+  background: color-mix(in hsl, var(--accent) 15%, var(--card));
+}
+.chip-table-hist tbody tr.is-selected td:first-child { color: var(--accent); font-weight: 700; }
+.chip-cell-chg { font-size: .7rem; margin-left: 4px; opacity: .92; }
+
+.chip-chart-box {
+  background: var(--card);
+  border: 1px solid hsl(225 10% 19%);
+  border-radius: 12px;
+  padding: 10px 12px 8px;
+}
+.chip-chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: .74rem;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.chip-chart-head b { color: var(--text); font-weight: 600; }
+.chip-bar-svg { width: 100%; height: 124px; display: block; overflow: visible; }
+.chip-bar-svg .bar-rect { cursor: pointer; transition: opacity .15s; }
+.chip-bar-svg .bar-rect:hover { opacity: 1 !important; }
+.chip-bar-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: .66rem;
+  color: var(--faint);
+  margin-top: 4px;
+}
+.chip-note { font-size: .7rem; color: var(--faint); line-height: 1.5; margin: -6px 2px 0; }
+.chip-empty {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--muted);
+  font-size: .84rem;
+  background: var(--card);
+  border-radius: 12px;
+}
