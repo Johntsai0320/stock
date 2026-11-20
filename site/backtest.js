@@ -65,6 +65,13 @@
       params: { dcaAmount: 20000, dcaFreq: 'monthly' },
     },
     {
+      id: '2330_bb_brk',
+      label: '2330：BB %b × BBW 真突破順勢',
+      target: '2330',
+      strategy: 'bb_breakout',
+      params: { bbPeriod: 20, bbStd: 2, bbSqueezePct: 35, bbEntryPctB: 0.85, bbHoldConfirm: true, bbExitPctB: 0.5, stopLossPct: 0 },
+    },
+    {
       id: 'qqqm_rsi',
       label: 'QQQM：RSI ≤ 30 超賣買進',
       target: 'QQQM',
@@ -77,6 +84,10 @@
     bb_pctb: {
       name: '布林通道 %b 進場（例：%b < 0 買・3個月後賣出）',
       desc: '計算 BB %b = (收盤 − 下軌) ÷ (上軌 − 下軌)；當 %b 為負（跌破布林下軌）時進場買進，可設定於 N 個月後、N 交易日後或反彈達目標 %b 時賣出，並支援單筆資金輪動或每次訊號獨立買進試算。',
+    },
+    bb_breakout: {
+      name: '布林 %b × BBW 真突破順勢策略（壓縮表態追多）',
+      desc: '實戰 3 步驟：1. 近期 BBW 曾壓縮至 120 日低分位（Squeeze）；2. 等待 %b 衝破門檻同時 BBW 明顯拐頭擴張、上下軌張開表態進場；3. 若突破後 2～3 根內 %b 立刻跌回 0.8 以下且 BBW 走平則視為假突破停損，否則續抱至 %b 跌破出場線。',
     },
     ma_cross: {
       name: '雙均線交叉（黃金交叉買 / 死亡交叉賣）',
@@ -124,6 +135,10 @@
       bbExitTarget: 1.0,
       bbSignalMode: 'single_pos', // 'single_pos' | 'every_signal'
       bbLotAmount: 100000,
+      bbSqueezePct: 35,
+      bbEntryPctB: 0.85,
+      bbHoldConfirm: true,
+      bbExitPctB: 0.5,
       shortMa: 5,
       longMa: 20,
       singleMa: 20,
@@ -162,6 +177,7 @@
     const ub = new Array(vals.length).fill(null);
     const lb = new Array(vals.length).fill(null);
     const pctB = new Array(vals.length).fill(null);
+    const bbw = new Array(vals.length).fill(null);
     for (let i = n - 1; i < vals.length; i++) {
       const m = mb[i];
       if (m == null) continue;
@@ -176,8 +192,9 @@
       ub[i] = u;
       lb[i] = l;
       pctB[i] = u > l ? (vals[i] - l) / (u - l) : 0.5;
+      bbw[i] = m > 0 ? ((u - l) / m) * 100 : null;
     }
-    return { mb, ub, lb, pctB };
+    return { mb, ub, lb, pctB, bbw };
   }
 
   function rsi(vals, n = 14) {
@@ -384,13 +401,25 @@
     // 計算指標（在完整序列上先計算，避免區間前段暖機損失）
     const overlays = [];
     const ind = {};
-    if (strategy === 'bb_pctb') {
+    if (strategy === 'bb_pctb' || strategy === 'bb_breakout') {
       const bPeriod = Math.max(5, Math.min(120, Math.round(params.bbPeriod || 20)));
       const bStd = Math.max(0.5, Math.min(4, Number(params.bbStd) || 2));
       const bb = bollinger(closes, bPeriod, bStd);
       ind.bb = bb;
       ind.bPeriod = bPeriod;
       ind.bStd = bStd;
+      if (strategy === 'bb_breakout') {
+        const rank = new Array(closes.length).fill(null);
+        for (let i = 0; i < closes.length; i++) {
+          const cur = bb.bbw[i];
+          if (cur == null) continue;
+          const win = bb.bbw.slice(Math.max(0, i - 119), i + 1).filter((v) => v != null);
+          if (win.length) {
+            rank[i] = (win.filter((v) => v <= cur).length / win.length) * 100;
+          }
+        }
+        ind.bbwRank120 = rank;
+      }
       overlays.push(
         { label: `布林上軌`, color: '#5ab0f0', arr: bb.ub },
         { label: `${bPeriod}MA中軌`, color: '#f2b544', arr: bb.mb },
@@ -581,6 +610,26 @@
           if (checkBbEntry(pb, entryTh)) {
             signal = { action: 'BUY', reason: `BB %b=${pb.toFixed(2)} ${entryTh === 0 ? '< 0 (跌破下軌)' : `≤ ${entryTh}`}` };
           }
+        } else if (strategy === 'bb_breakout') {
+          if (i >= 2) {
+            const pb = ind.bb.pctB[i];
+            const bbw0 = ind.bb.bbw[i], bbw1 = ind.bb.bbw[i - 1], bbw2 = ind.bb.bbw[i - 2];
+            const u0 = ind.bb.ub[i], u1 = ind.bb.ub[i - 1], l0 = ind.bb.lb[i], l1 = ind.bb.lb[i - 1];
+            const squeezeTh = Math.max(5, Math.min(95, Number(params.bbSqueezePct ?? 35)));
+            const entryPb = Number(params.bbEntryPctB ?? 0.85);
+            let hadSqueeze = false;
+            for (let j = Math.max(0, i - 15); j <= i; j++) {
+              if (ind.bbwRank120[j] != null && ind.bbwRank120[j] <= squeezeTh) {
+                hadSqueeze = true;
+                break;
+              }
+            }
+            const flare = u0 != null && u1 != null && l0 != null && l1 != null && u0 > u1 && l0 < l1;
+            const bbwTurning = bbw0 != null && bbw1 != null && bbw0 > bbw1 && (bbw2 == null || bbw0 > bbw2);
+            if (hadSqueeze && pb != null && pb >= entryPb && bbwTurning && (flare || bbw0 >= bbw1 * 1.02)) {
+              signal = { action: 'BUY', reason: `Squeeze後 %b=${pb.toFixed(2)}×BBW擴張真突破` };
+            }
+          }
         } else if (strategy === 'ma_cross') {
           if (i >= 1) {
             const f0 = ind.shortMa[i], s0 = ind.longMa[i];
@@ -626,6 +675,17 @@
           const exitTh = Number(params.bbExitTarget ?? 1.0);
           if (pb != null && pb >= exitTh) {
             signal = { action: 'SELL', reason: `BB %b=${pb.toFixed(2)} ≥ ${exitTh}` };
+          }
+        } else if (strategy === 'bb_breakout') {
+          const pb = ind.bb.pctB[i];
+          const bbw0 = ind.bb.bbw[i], bbw1 = ind.bb.bbw[i - 1];
+          const holdConfirm = params.bbHoldConfirm !== false && params.bbHoldConfirm !== 'false';
+          const exitPb = Number(params.bbExitPctB ?? 0.5);
+          const barsHeld = i - entry.idx;
+          if (holdConfirm && barsHeld >= (nextOpen ? 0 : 1) && barsHeld <= 3 && pb != null && pb < 0.8 && (bbw0 == null || bbw1 == null || bbw0 <= bbw1)) {
+            signal = { action: 'SELL', reason: `假突破停損（突破後 %b=${pb.toFixed(2)} < 0.8 且 BBW 走平）` };
+          } else if (pb != null && pb < exitPb) {
+            signal = { action: 'SELL', reason: `BB %b=${pb.toFixed(2)} < ${exitPb}（跌破趨勢出場）` };
           }
         } else if (strategy === 'ma_cross') {
           if (i >= 1) {
@@ -1201,6 +1261,13 @@
         { label: '%b < 0 買・6個月後賣', patch: { bbEntry: 0, bbExitMode: 'hold_months', bbHoldMonths: 6 } },
         { label: '%b < 0 買・觸上軌(%b≥1)賣', patch: { bbEntry: 0, bbExitMode: 'bb_target', bbExitTarget: 1.0 } },
       ];
+    } else if (s === 'bb_breakout') {
+      presets = [
+        { label: '嚴格真突破 (%b≥1.0・30%壓縮)', patch: { bbSqueezePct: 30, bbEntryPctB: 1.0, bbHoldConfirm: true, bbExitPctB: 0.5 } },
+        { label: '標準順勢 (%b≥0.85・35%壓縮)', patch: { bbSqueezePct: 35, bbEntryPctB: 0.85, bbHoldConfirm: true, bbExitPctB: 0.5 } },
+        { label: '寬鬆突破 (%b≥0.8・50%壓縮)', patch: { bbSqueezePct: 50, bbEntryPctB: 0.8, bbHoldConfirm: true, bbExitPctB: 0.5 } },
+        { label: '波段持有至跌破中軌 (無假突破停損)', patch: { bbSqueezePct: 35, bbEntryPctB: 0.85, bbHoldConfirm: false, bbExitPctB: 0.5 } },
+      ];
     } else if (s === 'ma_cross') {
       presets = [
         { label: '5MA × 10MA（極短）', patch: { shortMa: 5, longMa: 10 } },
@@ -1360,6 +1427,37 @@
           </select>
         </label>
         ${lotField}
+        ${stopLossHtml}
+      `;
+    } else if (s === 'bb_breakout') {
+      const holdOn = p.bbHoldConfirm !== false && p.bbHoldConfirm !== 'false';
+      fields = `
+        <label class="bt-field">
+          <span>布林週期 / 倍數 k</span>
+          <div class="bt-inline-pair">
+            <input type="number" class="g-input bt-num" data-bt-param="bbPeriod" min="5" max="120" value="${p.bbPeriod}" title="MA 週期" />
+            <input type="number" class="g-input bt-num" data-bt-param="bbStd" min="0.5" max="4" step="0.5" value="${p.bbStd}" title="標準差倍數" />
+          </div>
+        </label>
+        <label class="bt-field">
+          <span>步驟1：BBW 壓縮低點分位 ≤ %</span>
+          <input type="number" class="g-input bt-num" data-bt-param="bbSqueezePct" min="5" max="95" step="5" value="${p.bbSqueezePct}" title="近期曾低於120日BBW第幾百分位" />
+        </label>
+        <label class="bt-field">
+          <span>步驟2：真突破 %b 進場線 ≥</span>
+          <input type="number" class="g-input bt-num" data-bt-param="bbEntryPctB" min="0.5" max="1.5" step="0.05" value="${p.bbEntryPctB}" />
+        </label>
+        <label class="bt-field">
+          <span>步驟3：假突破 3 日內跌回 0.8 停損</span>
+          <select class="g-input bt-select" data-bt-param="bbHoldConfirm">
+            <option value="true" ${holdOn ? 'selected' : ''}>開啟（%b&lt;0.8 且 BBW 走平停損）</option>
+            <option value="false" ${!holdOn ? 'selected' : ''}>關閉（僅依跌破出場線賣出）</option>
+          </select>
+        </label>
+        <label class="bt-field">
+          <span>趨勢轉弱出場 %b &lt;</span>
+          <input type="number" class="g-input bt-num" data-bt-param="bbExitPctB" min="-0.5" max="1.0" step="0.1" value="${p.bbExitPctB}" />
+        </label>
         ${stopLossHtml}
       `;
     } else if (s === 'ma_cross') {

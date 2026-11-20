@@ -679,6 +679,33 @@
     return out;
   }
 
+  function bollingerSeries(vals, n = 20, k = 2) {
+    const len = vals.length;
+    const mb = sma(vals, n);
+    const ub = new Array(len).fill(null);
+    const lb = new Array(len).fill(null);
+    const pctB = new Array(len).fill(null);
+    const bbw = new Array(len).fill(null);
+    for (let i = n - 1; i < len; i++) {
+      const m = mb[i];
+      if (m == null) continue;
+      let sq = 0;
+      for (let j = i - n + 1; j <= i; j++) {
+        const d = vals[j] - m;
+        sq += d * d;
+      }
+      const sd = Math.sqrt(sq / n);
+      const u = m + k * sd;
+      const l = m - k * sd;
+      ub[i] = u;
+      lb[i] = l;
+      const w = u - l;
+      pctB[i] = w > 0 ? (vals[i] - l) / w : 0.5;
+      bbw[i] = m > 0 ? (w / m) * 100 : null;
+    }
+    return { mb, ub, lb, pctB, bbw };
+  }
+
   /** 日 K 對齊最新報價：依交易時區去重排序，最後一根若為同一交易日則以現價校正，否則補上今日 K 棒 */
   function alignedDaily(q, tz) {
     const byDate = new Map();
@@ -752,6 +779,8 @@
     if (state.charts) {
       state.charts.main.remove();
       state.charts.rsi.remove();
+      state.charts.pctb?.remove();
+      state.charts.bbw?.remove();
       state.charts = null;
     }
   }
@@ -1098,6 +1127,216 @@
     </div>`;
   }
 
+  // ---------------- 布林極限 %b 與帶寬 BBW 真假突破分析 ----------------
+  function analyzeBollinger(rows, currentPrice) {
+    if (!rows || rows.length < 22) return null;
+    const closes = rows.map((r) => r.c);
+    const len = closes.length;
+    if (isNum(currentPrice) && currentPrice > 0) closes[len - 1] = currentPrice;
+    const bb = bollingerSeries(closes, 20, 2);
+    const last = len - 1;
+    const prev1 = len - 2;
+    const prev2 = len - 3;
+    const pctB = bb.pctB[last];
+    const curBbw = bb.bbw[last];
+    const ub = bb.ub[last];
+    const mb = bb.mb[last];
+    const lb = bb.lb[last];
+    if (!isNum(pctB) || !isNum(curBbw) || !isNum(ub) || !isNum(mb) || !isNum(lb)) return null;
+
+    const prev1PctB = bb.pctB[prev1];
+    const prev1Bbw = bb.bbw[prev1];
+    const prev2Bbw = prev2 >= 0 ? bb.bbw[prev2] : null;
+    const bbwChg = isNum(prev1Bbw) ? curBbw - prev1Bbw : 0;
+    const bbwRel = isNum(prev1Bbw) && prev1Bbw > 0 ? bbwChg / prev1Bbw : 0;
+    const flare = isNum(bb.ub[prev1]) && isNum(bb.lb[prev1]) && ub > bb.ub[prev1] && lb < bb.lb[prev1];
+    const converging = isNum(bb.ub[prev1]) && isNum(bb.lb[prev1]) && ub <= bb.ub[prev1] && lb >= bb.lb[prev1];
+    const bbwExpanding = isNum(prev1Bbw) && bbwChg > 0 && (bbwRel >= 0.015 || (isNum(prev2Bbw) && curBbw > prev1Bbw && prev1Bbw > prev2Bbw));
+    const bbwStreakUp = isNum(prev1Bbw) && isNum(prev2Bbw) && curBbw > prev1Bbw && prev1Bbw > prev2Bbw;
+
+    const winStart = Math.max(0, len - 120);
+    const validWin = bb.bbw.slice(winStart).filter(isNum);
+    const sortedWin = [...validWin].sort((a, b) => a - b);
+    const bbwLow120 = sortedWin[0] ?? curBbw;
+    const bbwHigh120 = sortedWin[sortedWin.length - 1] ?? curBbw;
+    const squeezeThresh = sortedWin[Math.floor((sortedWin.length - 1) * 0.25)] ?? curBbw;
+    const rank120 = validWin.length ? (validWin.filter((v) => v <= curBbw).length / validWin.length) * 100 : 50;
+
+    let minRecentRank = rank120;
+    for (let k = Math.max(20, len - 9); k < last; k++) {
+      const bk = bb.bbw[k];
+      if (!isNum(bk)) continue;
+      const w = bb.bbw.slice(Math.max(0, k - 119), k + 1).filter(isNum);
+      if (w.length) {
+        const rk = (w.filter((v) => v <= bk).length / w.length) * 100;
+        if (rk < minRecentRank) minRecentRank = rk;
+      }
+    }
+    const wasSqueezed = rank120 <= 25 || minRecentRank <= 30;
+
+    let scenarioKey = 'mid_bear';
+    let label = '通道內偏空（%b < 0.5）';
+    let cls = 'bear';
+    let desc = '目前 %b 低於 0.5（中軌下方），代表處於偏弱格局；靜待 BBW 壓縮蓄勢後再觀察方向表態。';
+
+    const quickPullback = isNum(prev1PctB) && prev1PctB >= 1.0 && pctB < 0.8 && (bbwChg <= 0 || bbwRel < 0.015);
+
+    if (pctB >= 0.8 && (bbwExpanding || (flare && bbwChg > 0))) {
+      scenarioKey = 'true_up';
+      label = '真突破（有效起漲）';
+      cls = 'bull';
+      desc = `%b=${pctB.toFixed(2)} 衝破強勢區，且 BBW 同步放大（日變動 ${signed(bbwChg, 2)}%${flare ? '、上下軌同步張開' : ''}），${wasSqueezed ? '由低檔壓縮啟動，' : ''}多頭動能與波動率齊升，可順勢偏多看待。`;
+    } else if (quickPullback || (pctB >= 0.9 && !bbwExpanding && (!flare || bbwChg <= 0))) {
+      scenarioKey = 'false_up';
+      label = '假突破（誘多拉回）';
+      cls = 'warn';
+      desc = quickPullback
+        ? `前日 %b 曾突破 1.0 上軌，但今日立刻跌回 ${pctB.toFixed(2)} (< 0.8) 且 BBW ${bbwChg <= 0 ? '走平/收窄' : '擴張不足'}，符合假突破特徵，須留意拉回並執行停損。`
+        : `%b=${pctB.toFixed(2)} 雖觸及或逼近上軌 1.0，但 BBW 走平或未見明顯擴張（${converging ? '上軌下彎、下軌上揚收斂' : `日變動 ${signed(bbwChg, 2)}%`}），缺乏波動支撐，慎防假突破誘多拉回。`;
+    } else if (pctB <= 0.2 && (bbwExpanding || (flare && bbwChg > 0))) {
+      scenarioKey = 'true_down';
+      label = '真跌破（有效起跌）';
+      cls = 'bear';
+      desc = `%b=${pctB.toFixed(2)} 急跌破 ${pctB < 0 ? '0 下軌' : '0.2 弱勢區'}，且 BBW 明顯拐頭放大（日變動 ${signed(bbwChg, 2)}%${flare ? '、上下軌同步張開' : ''}），空方動能與賣壓湧現，應避開逆勢接刀。`;
+    } else if ((pctB < 0 || (isNum(prev1PctB) && prev1PctB < 0 && pctB >= 0 && pctB < 0.35)) && !bbwExpanding && (!flare || bbwChg <= 0)) {
+      scenarioKey = 'false_down';
+      label = '假跌破（誘空反彈）';
+      cls = 'neutral';
+      desc = `%b=${pctB.toFixed(2)} ${pctB < 0 ? '短暫跌破 0 下軌' : '已由下軌外站回 0 以上'}，但 BBW 維持低檔走平或高檔收斂（日變動 ${signed(bbwChg, 2)}%），賣壓缺乏持續性，屬洗盤誘空格局，站穩 %b ≥ 0 易迎反彈。`;
+    } else if (rank120 <= 25) {
+      scenarioKey = 'squeeze';
+      label = 'BBW 壓縮蓄勢（Squeeze）';
+      cls = 'neutral';
+      desc = `BBW 降至近 ${validWin.length} 根第 ${rank120.toFixed(0)}% 低分位（通道極度收窄），市場正在蓄勢待機，靜待 %b > 1.0 或 < 0 搭配 BBW「V 型反轉向上」同步表態。`;
+    } else if (pctB >= 0.5) {
+      scenarioKey = 'mid_bull';
+      label = '通道內偏多（%b ≥ 0.5）';
+      cls = 'bull';
+      desc = `收盤位於 20MA 中軌上方（%b=${pctB.toFixed(2)} ≥ 0.5 多空分水嶺），多方占優；目前 BBW 日變動 ${signed(bbwChg, 2)}%（分位 ${rank120.toFixed(0)}%），留意是否進入上軌真突破或壓縮蓄勢。`;
+    }
+
+    const watershed = pctB >= 0.5
+      ? { label: '%b ≥ 0.5（多方優勢）', cls: 'bull' }
+      : { label: '%b < 0.5（空方劣勢）', cls: 'bear' };
+
+    const steps = [
+      {
+        title: '1. BBW 壓縮期 (Squeeze)',
+        state: rank120 <= 25 ? 'is-on' : wasSqueezed ? 'is-on' : '',
+        status: rank120 <= 25 ? '壓縮蓄勢中' : wasSqueezed ? '近期曾壓縮' : `分位 ${rank120.toFixed(0)}%`,
+        detail: rank120 <= 25
+          ? `BBW ${curBbw.toFixed(2)}% 落於近 ${validWin.length} 日前 25% 極窄區（門檻 ≤ ${squeezeThresh.toFixed(2)}%），變盤前兆。`
+          : wasSqueezed
+            ? `近 8 日曾降至第 ${minRecentRank.toFixed(0)}% 低分位（目前回升至 ${rank120.toFixed(0)}%），符合壓縮後起爆條件。`
+            : `目前 BBW 位於近 ${validWin.length} 日第 ${rank120.toFixed(0)}% 分位（區間 ${bbwLow120.toFixed(2)}%～${bbwHigh120.toFixed(2)}%）。`,
+      },
+      {
+        title: '2. 雙指標同步表態',
+        state: (scenarioKey === 'true_up' || scenarioKey === 'true_down') ? 'is-on' : (scenarioKey === 'false_up' ? 'is-warn' : ''),
+        status: scenarioKey === 'true_up' ? '同步向上突破' : scenarioKey === 'true_down' ? '同步向下跌破' : scenarioKey === 'false_up' ? '波動未跟上' : '等待表態',
+        detail: flare
+          ? `上軌走升、下軌走降同步張開，%b=${pctB.toFixed(2)} 與 BBW（${signed(bbwChg, 2)}%）同向擴張。`
+          : `BBW 日變動 ${signed(bbwChg, 2)}%（${converging ? '通道收斂中' : bbwChg > 0 ? '單邊略擴' : '走平或縮窄'}），目前 %b=${pctB.toFixed(2)}。`,
+      },
+      {
+        title: '3. 後續 2～3 根延續性',
+        state: (pctB >= 0.8 && bbwStreakUp) || (pctB <= 0.2 && bbwStreakUp) ? 'is-on' : quickPullback ? 'is-warn' : '',
+        status: quickPullback ? '假突破停損警訊' : bbwStreakUp && pctB >= 0.8 ? '強勢沿上軌續漲' : bbwStreakUp && pctB <= 0.2 ? '賣壓連擴勿接刀' : '持續追蹤',
+        detail: quickPullback
+          ? '前日突破 1.0 後今日 %b 跌回 0.8 下且 BBW 未續擴，應判定假突破執行停損。'
+          : bbwStreakUp && pctB >= 0.8
+            ? 'BBW 連續走高且 %b 站穩 0.8 以上，確認真突破延續動能。'
+            : bbwStreakUp && pctB <= 0.2
+              ? 'BBW 連續擴大且 %b 貼近下軌 0.2 以下，跌勢動能延續中。'
+              : '真突破後須觀察 2～3 根內 BBW 續升且 %b 守住 0.8；跌破即防假突破。',
+      },
+    ];
+
+    return {
+      pctB,
+      curBbw,
+      bbwChg,
+      rank120,
+      bbwLow120,
+      bbwHigh120,
+      squeezeThresh,
+      ub,
+      mb,
+      lb,
+      flare,
+      watershed,
+      scenarioKey,
+      label,
+      cls,
+      desc,
+      steps,
+    };
+  }
+
+  function renderBbPanel(bb, d) {
+    if (!bb) return '';
+    const rows = [
+      { key: 'true_up', name: '真突破（有效起漲）', pb: '快速衝破 0.8 ～ 1.0 以上', bw: '從低檔極度收窄明顯拐頭向上放大', act: '盤整結束、上下軌張開，多頭動能強勁偏多看待。' },
+      { key: 'false_up', name: '假突破（誘多拉回）', pb: '短暫觸及或微幅突破 1.0', bw: '處於高檔走平，或甚至向下收斂', act: '波動未跟上（收斂末期），極易迅速跌回通道內。' },
+      { key: 'true_down', name: '真跌破（有效起跌）', pb: '快速跌破 0.2 ～ 0 以下', bw: '從低檔收窄處明顯拐頭向上放大', act: '恐慌賣壓湧現、上下軌同步擴張，應避開接刀。' },
+      { key: 'false_down', name: '假跌破（誘空反彈）', pb: '短暫跌破 0', bw: '維持低檔走平或高檔收斂', act: '賣壓缺乏持續性，站回 0 以上時容易迎來反彈。' },
+    ];
+    return `<div class="ma-panel">
+      <div class="ma-panel-head">
+        <div class="ma-panel-title">布林通道 BB %b × BBW 真假突破診斷</div>
+        <div class="ma-badges">
+          <span class="ma-badge ${bb.cls}">${bb.label}</span>
+          <span class="ma-badge ${bb.watershed.cls}">${bb.watershed.label}</span>
+          ${bb.rank120 <= 25 ? '<span class="ma-badge neutral">Squeeze 壓縮低檔</span>' : ''}
+        </div>
+      </div>
+      <p class="ma-desc">${bb.desc}</p>
+      <div class="bb-grid">
+        <div class="ma-item">
+          <div class="ma-name">BB %b (20,2)</div>
+          <div class="ma-val ${bb.pctB >= 0.5 ? 'up' : 'down'}">${bb.pctB.toFixed(2)} <small style="font-weight:500;font-size:.74rem">(${(bb.pctB * 100).toFixed(0)}%)</small></div>
+          <div class="bb-sub">${bb.pctB > 1 ? '突破上軌 (>1.0)' : bb.pctB < 0 ? '跌破下軌 (<0)' : bb.pctB >= 0.5 ? '中軌上偏多 (≥0.5)' : '中軌下偏空 (<0.5)'}</div>
+        </div>
+        <div class="ma-item">
+          <div class="ma-name">BBW 布林帶寬</div>
+          <div class="ma-val">${bb.curBbw.toFixed(2)}%</div>
+          <div class="bb-sub ${bb.bbwChg >= 0 ? 'up' : 'down'}">日變動 ${signed(bb.bbwChg, 2)}% · ${bb.flare ? '上下軌張開' : bb.bbwChg > 0 ? '溫和放大' : '收窄走平'}</div>
+        </div>
+        <div class="ma-item">
+          <div class="ma-name">120 日波動壓縮分位</div>
+          <div class="ma-val">${bb.rank120.toFixed(0)}%</div>
+          <div class="bb-sub">低檔壓縮線 ≤ ${bb.squeezeThresh.toFixed(2)}%（範圍 ${bb.bbwLow120.toFixed(1)}～${bb.bbwHigh120.toFixed(1)}%）</div>
+        </div>
+        <div class="ma-item">
+          <div class="ma-name">布林三軌價位</div>
+          <div class="ma-val" style="font-size:.82rem">${fmt(bb.ub, d)} / ${fmt(bb.lb, d)}</div>
+          <div class="bb-sub">上軌 ${fmt(bb.ub, d)} · 中軌 ${fmt(bb.mb, d)} · 下軌 ${fmt(bb.lb, d)}</div>
+        </div>
+      </div>
+      <div class="bb-steps">
+        ${bb.steps.map((st) => `<div class="bb-step ${st.state}">
+          <div class="bb-step-head"><span>${st.title}</span><span>${st.status}</span></div>
+          <div>${st.detail}</div>
+        </div>`).join('')}
+      </div>
+      <details class="bb-guide">
+        <summary>展開：真突破 vs. 假突破判讀對照表與抓突破 3 步驟</summary>
+        <div class="bb-guide-wrap">
+          <table class="bb-guide-table">
+            <thead>
+              <tr><th>市場情境</th><th>%b 表現（位置）</th><th>BBW 表現（波動率）</th><th>盤面意義與操作判讀</th></tr>
+            </thead>
+            <tbody>
+              ${rows.map((r) => `<tr class="${bb.scenarioKey === r.key ? 'is-cur' : ''}">
+                <td><strong>${r.name}</strong></td><td>${r.pb}</td><td>${r.bw}</td><td>${r.act}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>`;
+  }
+
   function updateSheet(rebuild) {
     const key = state.openKey;
     const q = state.quotes[key];
@@ -1127,6 +1366,21 @@
     const diag = analyzeMovingAverages(rows, q.price);
     const maEl = $('#sheet-ma');
     if (maEl) maEl.innerHTML = renderMaPanel(diag, d);
+    const bbDiag = analyzeBollinger(rows, q.price);
+    const bbEl = $('#sheet-bb');
+    if (bbEl) bbEl.innerHTML = renderBbPanel(bbDiag, d);
+    const pctbValEl = $('#pctb-val');
+    if (pctbValEl) {
+      pctbValEl.textContent = bbDiag
+        ? `${bbDiag.pctB.toFixed(2)}（${bbDiag.pctB > 1 ? '破上軌' : bbDiag.pctB < 0 ? '破下軌' : bbDiag.pctB >= 0.5 ? '偏多 ≥0.5' : '偏空 <0.5'}）`
+        : '—';
+    }
+    const bbwValEl = $('#bbw-val');
+    if (bbwValEl) {
+      bbwValEl.textContent = bbDiag
+        ? `${bbDiag.curBbw.toFixed(2)}%（${signed(bbDiag.bbwChg, 2)}% · 分位 ${bbDiag.rank120.toFixed(0)}%）`
+        : '—';
+    }
 
     const lastMA = series.ma20.filter((p) => p).pop();
     const lastRSI = series.rsi.filter((p) => p).pop();
@@ -1135,6 +1389,8 @@
     const baseLabel = q.group === 'fut' ? (key === 'TXF_D' ? '昨日結算' : '參考價') : '昨收';
 
     let stats;
+    const bbPctStat = ['BB %b (20,2)', bbDiag ? `${bbDiag.pctB.toFixed(2)}（${bbDiag.pctB >= 0.5 ? '偏多' : '偏空'}）` : '—'];
+    const bbwStat = ['BBW 帶寬', bbDiag ? `${bbDiag.curBbw.toFixed(2)}%（${signed(bbDiag.bbwChg, 2)}%）` : '—'];
     if (key === 'FGI') {
       const fz = getFgiZone(q.price);
       stats = [
@@ -1150,6 +1406,8 @@
         ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
         ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
         ['年線 (240MA)', diag?.mas?.ma240?.val ? fmt(diag.mas.ma240.val, d) : '—'],
+        bbPctStat,
+        bbwStat,
         ['均線型態', diag?.pattern?.label || '—'],
         ['資料來源', 'CNN Business'],
       ];
@@ -1169,6 +1427,8 @@
         ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
         ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
         ['年線 (240MA)', diag?.mas?.ma240?.val ? fmt(diag.mas.ma240.val, d) : '—'],
+        bbPctStat,
+        bbwStat,
         ['均線型態', diag?.pattern?.label || '—'],
       ];
     } else {
@@ -1184,6 +1444,8 @@
         ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
         ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
         ['年線 (240MA)', diag?.mas?.ma240?.val ? fmt(diag.mas.ma240.val, d) : '—'],
+        bbPctStat,
+        bbwStat,
         ['均線型態', diag?.pattern?.label || '—'],
         ['狀態', marketStatus(q).text],
       ];
@@ -1215,6 +1477,11 @@
         ma60: [],
         ma120: [],
         ma240: [],
+        bbUb: [],
+        bbLb: [],
+        pctB: [],
+        bbw: [],
+        bbwSqueezeThresh: null,
         rsi: line.map((p, i) => (r[i] != null ? { time: p.time, value: r[i] } : null)),
       };
     }
@@ -1222,6 +1489,9 @@
     const closes = rows.map((r) => r.c);
     const m5 = sma(closes, 5), m10 = sma(closes, 10), m20 = sma(closes, 20), m60 = sma(closes, 60), m120 = sma(closes, 120), m240 = sma(closes, 240);
     const r = rsi(closes, 14);
+    const bbAll = bollingerSeries(closes, 20, 2);
+    const bbwWin = bbAll.bbw.slice(Math.max(0, rows.length - 120)).filter(isNum).sort((a, b) => a - b);
+    const bbwSqueezeThresh = bbwWin.length ? bbwWin[Math.floor((bbwWin.length - 1) * 0.25)] : null;
     const n = { '3m': 63, '6m': 126, '1y': 260 }[state.range] || 126;
     const from = Math.max(0, rows.length - n);
     const sl = (arr) => arr.slice(from);
@@ -1234,28 +1504,39 @@
       ma60: sl(rows.map((x, i) => (m60[i] != null ? { time: x.date, value: m60[i] } : null))),
       ma120: sl(rows.map((x, i) => (m120[i] != null ? { time: x.date, value: m120[i] } : null))),
       ma240: sl(rows.map((x, i) => (m240[i] != null ? { time: x.date, value: m240[i] } : null))),
+      bbUb: sl(rows.map((x, i) => (bbAll.ub[i] != null ? { time: x.date, value: bbAll.ub[i] } : null))),
+      bbLb: sl(rows.map((x, i) => (bbAll.lb[i] != null ? { time: x.date, value: bbAll.lb[i] } : null))),
+      pctB: sl(rows.map((x, i) => (bbAll.pctB[i] != null ? { time: x.date, value: bbAll.pctB[i] } : null))),
+      bbw: sl(rows.map((x, i) => (bbAll.bbw[i] != null ? { time: x.date, value: bbAll.bbw[i] } : null))),
+      bbwSqueezeThresh,
       rsi: sl(rows.map((x, i) => (r[i] != null ? { time: x.date, value: r[i] } : null))),
     };
   }
 
   function drawCharts(s, q, rebuild) {
     const LWC = window.LightweightCharts;
-    const mainEl = $('#chart-main'), rsiEl = $('#chart-rsi');
+    const mainEl = $('#chart-main'), rsiEl = $('#chart-rsi'), pctbEl = $('#chart-pctb'), bbwEl = $('#chart-bbw');
+    const bbSubWrap = $('#bb-subcharts');
     if (!LWC) {
       mainEl.innerHTML = '<div class="empty-chart">圖表元件載入中…</div>';
+      if (bbSubWrap) bbSubWrap.hidden = true;
       setTimeout(() => state.openKey && updateSheet(true), 600);
       return;
     }
     const c = colors();
     const { dir } = calc(q);
     const lineColor = c[dir];
-    const MA5 = '#f1f5f9', MA10 = '#22d3ee', MA20 = '#f2b544', MA60 = '#5ab0f0', MA120 = '#c678dd', MA240 = '#4cd964';
+    const MA5 = '#f1f5f9', MA10 = '#22d3ee', MA20 = '#f2b544', MA60 = '#5ab0f0', MA120 = '#c678dd', MA240 = '#4cd964', BB_COLOR = '#38bdf8';
     const empty = s.kind === 'line' ? s.line.length < 2 : s.candles.length < 2;
+    const hasBb = !empty && s.kind === 'candle' && (s.pctB || []).some(Boolean);
+    if (bbSubWrap) bbSubWrap.hidden = !hasBb;
 
-    if (rebuild || !state.charts || state.charts.kind !== s.kind) {
+    if (rebuild || !state.charts || state.charts.kind !== s.kind || Boolean(state.charts.pctb) !== hasBb) {
       destroyCharts();
       mainEl.innerHTML = '';
       rsiEl.innerHTML = '';
+      if (pctbEl) pctbEl.innerHTML = '';
+      if (bbwEl) bbwEl.innerHTML = '';
       if (empty) {
         mainEl.innerHTML = `<div class="empty-chart">${q.group === 'fut' ? '期貨走勢由雲端排程隨盤中每分鐘累積，開盤後即會出現' : '尚無走勢資料'}</div>`;
         $('#sheet-legend').innerHTML = '';
@@ -1284,23 +1565,65 @@
       const ma60 = main.addLineSeries({ color: MA60, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const ma120 = main.addLineSeries({ color: MA120, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const ma240 = main.addLineSeries({ color: MA240, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      const bbUb = s.kind === 'candle' ? main.addLineSeries({ color: BB_COLOR, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }) : null;
+      const bbLb = s.kind === 'candle' ? main.addLineSeries({ color: BB_COLOR, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }) : null;
       const rsiS = rsiC.addLineSeries({ color: '#c9a7ff', lineWidth: 1.5, priceLineVisible: false });
       rsiS.createPriceLine({ price: 70, color: 'rgba(255,255,255,0.25)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
       rsiS.createPriceLine({ price: 30, color: 'rgba(255,255,255,0.25)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
-      // 兩圖時間軸同步
-      main.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rsiC.timeScale().setVisibleLogicalRange(r));
-      state.charts = { kind: s.kind, main, rsi: rsiC, price, ma5, ma10, ma20, ma60, ma120, ma240, rsiS, baseLine: null };
+
+      let pctbC = null, pctbS = null, bbwC = null, bbwS = null;
+      if (hasBb && pctbEl && bbwEl) {
+        pctbC = LWC.createChart(pctbEl, { ...base, rightPriceScale: { borderVisible: false, minimumWidth: 78, scaleMargins: { top: 0.12, bottom: 0.12 } } });
+        pctbS = pctbC.addLineSeries({ color: BB_COLOR, lineWidth: 1.8, priceLineVisible: false });
+        pctbS.createPriceLine({ price: 1, color: 'rgba(248,113,113,0.45)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false, title: '1.0' });
+        pctbS.createPriceLine({ price: 0.5, color: 'rgba(242,181,68,0.55)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false, title: '0.5' });
+        pctbS.createPriceLine({ price: 0, color: 'rgba(74,222,128,0.45)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false, title: '0.0' });
+
+        bbwC = LWC.createChart(bbwEl, { ...base, rightPriceScale: { borderVisible: false, minimumWidth: 78, scaleMargins: { top: 0.12, bottom: 0.08 } } });
+        bbwS = bbwC.addAreaSeries({ lineColor: '#a78bfa', topColor: 'rgba(167,139,250,0.32)', bottomColor: 'rgba(167,139,250,0.02)', lineWidth: 1.8, priceLineVisible: false });
+        if (isNum(s.bbwSqueezeThresh)) {
+          bbwS.createPriceLine({ price: s.bbwSqueezeThresh, color: 'rgba(242,181,68,0.55)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false, title: '低壓縮' });
+        }
+      }
+
+      // 多圖時間軸雙向同步
+      const allCharts = [main, rsiC, pctbC, bbwC].filter(Boolean);
+      let syncing = false;
+      for (const src of allCharts) {
+        src.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+          if (!r || syncing) return;
+          syncing = true;
+          for (const dst of allCharts) {
+            if (dst !== src) dst.timeScale().setVisibleLogicalRange(r);
+          }
+          syncing = false;
+        });
+      }
+      state.charts = { kind: s.kind, main, rsi: rsiC, pctb: pctbC, bbw: bbwC, price, ma5, ma10, ma20, ma60, ma120, ma240, bbUb, bbLb, rsiS, pctbS, bbwS, baseLine: null };
     }
     if (empty) return;
     const ch = state.charts;
+    const padToCandles = (candles, pts) => {
+      const m = new Map();
+      for (const p of pts || []) {
+        if (p && isNum(p.value)) m.set(p.time, p.value);
+      }
+      return candles.map((c0) => (m.has(c0.time) ? { time: c0.time, value: m.get(c0.time) } : { time: c0.time }));
+    };
     if (s.kind === 'line') {
       ch.price.applyOptions({ lineColor, topColor: lineColor + '55', bottomColor: lineColor + '00' });
       ch.price.setData(s.line);
       if (ch.baseLine) ch.price.removePriceLine(ch.baseLine);
       ch.baseLine = isNum(q.prevClose) ? ch.price.createPriceLine({ price: q.prevClose, color: '#8b93a1', lineStyle: 2, lineWidth: 1, axisLabelVisible: true, title: q.group === 'fut' ? '參考' : '昨收' }) : null;
+      ch.rsiS.setData(s.rsi.filter(Boolean));
     } else {
       ch.price.applyOptions({ upColor: c.up, downColor: c.down, borderUpColor: c.up, borderDownColor: c.down, wickUpColor: c.up, wickDownColor: c.down });
       ch.price.setData(s.candles);
+      ch.rsiS.setData(padToCandles(s.candles, s.rsi));
+      if (ch.bbUb) ch.bbUb.setData((s.bbUb || []).filter(Boolean));
+      if (ch.bbLb) ch.bbLb.setData((s.bbLb || []).filter(Boolean));
+      if (ch.pctbS) ch.pctbS.setData(padToCandles(s.candles, s.pctB));
+      if (ch.bbwS) ch.bbwS.setData(padToCandles(s.candles, s.bbw));
     }
     if (ch.ma5) ch.ma5.setData((s.ma5 || []).filter(Boolean));
     if (ch.ma10) ch.ma10.setData((s.ma10 || []).filter(Boolean));
@@ -1308,10 +1631,11 @@
     ch.ma60.setData(s.ma60.filter(Boolean));
     if (ch.ma120) ch.ma120.setData((s.ma120 || []).filter(Boolean));
     if (ch.ma240) ch.ma240.setData((s.ma240 || []).filter(Boolean));
-    ch.rsiS.setData(s.rsi.filter(Boolean));
     if (rebuild) {
       ch.main.timeScale().fitContent();
       ch.rsi.timeScale().fitContent();
+      if (ch.pctb) ch.pctb.timeScale().fitContent();
+      if (ch.bbw) ch.bbw.timeScale().fitContent();
     }
     if (s.kind === 'line') {
       $('#sheet-legend').innerHTML =
@@ -1325,6 +1649,7 @@
         (s.ma60.some(Boolean) ? `<span><i style="background:${MA60}"></i>季線 60MA</span>` : '') +
         ((s.ma120 || []).some(Boolean) ? `<span><i style="background:${MA120}"></i>半年線 120MA</span>` : '') +
         ((s.ma240 || []).some(Boolean) ? `<span><i style="background:${MA240}"></i>年線 240MA</span>` : '') +
+        ((s.bbUb || []).some(Boolean) ? `<span><i style="background:${BB_COLOR}"></i>BB 上下軌</span>` : '') +
         `<span>日 K</span>`;
     }
   }
@@ -1365,7 +1690,7 @@
   (() => {
     let y0 = null;
     const sheet = $('#sheet');
-    sheet.addEventListener('touchstart', (e) => { if (sheet.scrollTop <= 0 && !e.target.closest('.chart-main,.chart-rsi')) y0 = e.touches[0].clientY; }, { passive: true });
+    sheet.addEventListener('touchstart', (e) => { if (sheet.scrollTop <= 0 && !e.target.closest('.chart-main,.chart-rsi,.chart-bb')) y0 = e.touches[0].clientY; }, { passive: true });
     sheet.addEventListener('touchend', (e) => { if (y0 != null && e.changedTouches[0].clientY - y0 > 90) closeSheet(); y0 = null; }, { passive: true });
   })();
 

@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=16" />
+  <link rel="stylesheet" href="styles.css?v=17" />
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
 </head>
 <body class="scheme-tw">
@@ -178,6 +178,7 @@
                 <span>2. 回測策略</span>
                 <select id="bt-strategy" class="g-input bt-select">
                   <option value="bb_pctb">布林通道 %b 策略（例：%b &lt; 0 買・3個月後賣）</option>
+                  <option value="bb_breakout">布林 %b × BBW 真突破順勢策略（壓縮表態追多）</option>
                   <option value="ma_cross">雙均線交叉（黃金交叉買 / 死亡交叉賣）</option>
                   <option value="ma_single">單均線防守（站上買進 / 跌破賣出）</option>
                   <option value="rsi_reversion">RSI 超賣買進 / 超買賣出</option>
@@ -328,7 +329,14 @@
     <div id="chart-main" class="chart-main"></div>
     <div class="rsi-head"><span>RSI(14)</span><span id="rsi-val" class="muted">—</span></div>
     <div id="chart-rsi" class="chart-rsi"></div>
+    <div id="bb-subcharts" hidden>
+      <div class="rsi-head bb-head"><span>BB %b (20,2)（0.5 多空分水嶺）</span><span id="pctb-val" class="muted">—</span></div>
+      <div id="chart-pctb" class="chart-bb"></div>
+      <div class="rsi-head bb-head"><span>BBW (20,2) 布林帶寬 %（Squeeze / 波動擴張）</span><span id="bbw-val" class="muted">—</span></div>
+      <div id="chart-bbw" class="chart-bb"></div>
+    </div>
     <div id="sheet-ma" class="ma-panel-wrap"></div>
+    <div id="sheet-bb" class="ma-panel-wrap"></div>
     <dl id="sheet-stats" class="stats"></dl>
   </section>
 
@@ -351,8 +359,8 @@
     <div id="chip-sheet-body" class="chip-sheet-body"></div>
   </section>
 
-  <script src="app.js?v=16" defer></script>
-  <script src="gooaye.js?v=7" defer></script>
-  <script src="backtest.js?v=1" defer></script>
+  <script src="app.js?v=17" defer></script>
+  <script src="gooaye.js?v=8" defer></script>
+  <script src="backtest.js?v=2" defer></script>
 </body>
 </html>

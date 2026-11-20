@@ -61,6 +61,75 @@
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
   }
 
+  function calcBbMetrics(closes, n = 20, k = 2) {
+    const len = closes.length;
+    if (len < n + 2) return null;
+    const pctB = new Array(len).fill(null);
+    const bbw = new Array(len).fill(null);
+    const ub = new Array(len).fill(null);
+    const lb = new Array(len).fill(null);
+    let sum = 0;
+    for (let i = 0; i < len; i++) {
+      sum += closes[i];
+      if (i >= n) sum -= closes[i - n];
+      if (i >= n - 1) {
+        const m = sum / n;
+        let sq = 0;
+        for (let j = i - n + 1; j <= i; j++) {
+          const d = closes[j] - m;
+          sq += d * d;
+        }
+        const sd = Math.sqrt(sq / n);
+        const u = m + k * sd;
+        const l = m - k * sd;
+        ub[i] = u;
+        lb[i] = l;
+        pctB[i] = u > l ? (closes[i] - l) / (u - l) : 0.5;
+        bbw[i] = m > 0 ? ((u - l) / m) * 100 : null;
+      }
+    }
+    const last = len - 1;
+    const prev1 = len - 2;
+    const prev2 = len - 3;
+    const curPctB = pctB[last];
+    const prev1PctB = pctB[prev1];
+    const curBbw = bbw[last];
+    const prev1Bbw = bbw[prev1];
+    const prev2Bbw = prev2 >= 0 ? bbw[prev2] : null;
+    if (curPctB == null || curBbw == null) return null;
+
+    const validWin = bbw.slice(Math.max(0, len - 120)).filter((v) => typeof v === 'number' && Number.isFinite(v));
+    const rank120 = validWin.length ? (validWin.filter((v) => v <= curBbw).length / validWin.length) * 100 : 50;
+    const bbwChg = prev1Bbw != null ? curBbw - prev1Bbw : 0;
+    const bbwRel = prev1Bbw > 0 ? bbwChg / prev1Bbw : 0;
+    const flare = ub[last] != null && lb[last] != null && ub[prev1] != null && lb[prev1] != null && ub[last] > ub[prev1] && lb[last] < lb[prev1];
+    const bbwExpanding = bbwChg > 0 && (bbwRel >= 0.015 || (prev2Bbw != null && curBbw > prev1Bbw && prev1Bbw > prev2Bbw));
+
+    let bbLabel = '%b<0.5 偏空';
+    let bbCls = 'bear';
+    if (curPctB >= 0.8 && (bbwExpanding || (flare && bbwChg > 0))) {
+      bbLabel = '真突破';
+      bbCls = 'bull';
+    } else if ((curPctB >= 0.9 || (prev1PctB != null && prev1PctB > 1 && curPctB < 0.8)) && !bbwExpanding && (!flare || bbwChg <= 0)) {
+      bbLabel = '假突破警戒';
+      bbCls = 'warn';
+    } else if (curPctB <= 0.2 && (bbwExpanding || (flare && bbwChg > 0))) {
+      bbLabel = '真跌破';
+      bbCls = 'bear';
+    } else if ((curPctB < 0 || (prev1PctB != null && prev1PctB < 0 && curPctB >= 0 && curPctB < 0.35)) && !bbwExpanding && (!flare || bbwChg <= 0)) {
+      bbLabel = '假跌破測彈';
+      bbCls = 'neutral';
+    } else if (rank120 <= 25) {
+      bbLabel = 'Squeeze壓縮';
+      bbCls = 'neutral';
+    } else if (curPctB >= 0.5) {
+      bbLabel = '%b≥0.5 偏多';
+      bbCls = 'bull';
+    }
+
+    return { pctB: curPctB, bbw: curBbw, bbwChg, rank120, flare, bbLabel, bbCls };
+  }
+
   function calcIndexMetrics(q, key) {
     if (!q || !Array.isArray(q.daily) || q.daily.length < 5) return null;
     const tz = q.tz || INDEX_TZ[key || q.key] || 'UTC';
@@ -149,7 +218,33 @@
       }
     }
 
-    return { price, pct52, hi52, lo52, ma5, ma10, ma20, ma60, ma120, ma240, b5, b10, b20, b60, b120, b240, stage, stageCls };
+    const bb = calcBbMetrics(closes);
+    return {
+      price,
+      pct52,
+      hi52,
+      lo52,
+      ma5,
+      ma10,
+      ma20,
+      ma60,
+      ma120,
+      ma240,
+      b5,
+      b10,
+      b20,
+      b60,
+      b120,
+      b240,
+      stage,
+      stageCls,
+      pctB: bb?.pctB ?? null,
+      bbw: bb?.bbw ?? null,
+      bbwChg: bb?.bbwChg ?? null,
+      bbRank120: bb?.rank120 ?? null,
+      bbLabel: bb?.bbLabel ?? null,
+      bbCls: bb?.bbCls ?? 'neutral',
+    };
   }
 
   function fmtBias(v) {
@@ -1047,7 +1142,10 @@
 
     const hints = [];
     if (tw) {
-      hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距週線5MA <b>${fmtBias(tw.b5)}</b>、雙週線10MA <b>${fmtBias(tw.b10)}</b>、月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>。`);
+      const bbNote = tw.pctB != null && tw.bbw != null
+        ? `；布林 <b>%b=${tw.pctB.toFixed(2)}</b> / <b>BBW=${tw.bbw.toFixed(2)}%</b>（${tw.bbLabel}）`
+        : '';
+      hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距週線5MA <b>${fmtBias(tw.b5)}</b>、雙週線10MA <b>${fmtBias(tw.b10)}</b>、月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>${bbNote}。`);
     }
     if (marginSignal.hint) hints.push(marginSignal.hint);
     if (instSignal.hint) hints.push(instSignal.hint);
@@ -1121,6 +1219,11 @@
             <div><span>半年120</span><b class="${biasCls(m.b120)}">${fmtBias(m.b120)}</b></div>
             <div><span>年線240</span><b class="${biasCls(m.b240)}">${fmtBias(m.b240)}</b></div>
           </div>
+          ${m.pctB != null && m.bbw != null ? `<div class="g-reg-bb">
+            <div><span>BB %b</span><b class="${m.pctB >= 0.5 ? 'up' : 'down'}">${m.pctB.toFixed(2)}</b></div>
+            <div><span>BBW 帶寬</span><b>${m.bbw.toFixed(1)}% (${m.bbwChg >= 0 ? '+' : ''}${m.bbwChg.toFixed(1)}%)</b></div>
+            <div><span>布林表態</span><b class="g-reg-bb-tag ${m.bbCls}">${esc(m.bbLabel)}</b></div>
+          </div>` : ''}
         </article>
       `;
     }).join('');
