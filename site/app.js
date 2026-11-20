@@ -807,6 +807,30 @@
         : { label: '跌破 5MA 週線', cls: 'bear', text: '現價跌破 5MA（週線）極短線防守線，短線轉弱。' };
     }
 
+    // 實際檢查現價與中長期均線位置：切勿在已跌破年線／季線時誤稱下方具支撐
+    const midLongList = [
+      { key: 'ma60', label: '季線(60MA)', val: cur60 },
+      { key: 'ma120', label: '半年線(120MA)', val: cur120 },
+      { key: 'ma240', label: '年線(240MA)', val: cur240 },
+    ].filter((x) => isNum(x.val));
+    const supportMas = midLongList.filter((x) => p >= x.val).map((x) => x.label);
+    const pressureMas = midLongList.filter((x) => p < x.val).map((x) => x.label);
+    const allMasVals = [cur5, cur10, cur20, cur60, cur120, cur240].filter(isNum);
+    const belowAllMas = allMasVals.length >= 2 && allMasVals.every((v) => p < v);
+    const belowAnnual = isNum(cur240) && p < cur240;
+    const belowQuarter = isNum(cur60) && p < cur60;
+
+    let posSummary = '';
+    if (belowAllMas && belowAnnual) {
+      posSummary = '現價已跌破年線（240MA）與全數均線，下方已無均線支撐，上方週線至年線全面轉為反壓。';
+    } else if (midLongList.length && supportMas.length === 0) {
+      posSummary = `現價位於${pressureMas.join('、')}之下，下方無中長期均線支撐，上方均線全數轉為反壓。`;
+    } else if (pressureMas.length && supportMas.length) {
+      posSummary = `上方受${pressureMas.join('、')}反壓，下方僅餘${supportMas.join('、')}提供支撐觀察。`;
+    } else if (supportMas.length) {
+      posSummary = `現價仍站穩於${supportMas.join('、')}之上。`;
+    }
+
     // 均線走向（斜率）
     const slopeAt = (arr, cur, lookback) => {
       const idx = Math.max(0, len - 1 - lookback);
@@ -834,7 +858,21 @@
     let pattern = { type: 'neutral', label: '均線糾結（整理）', cls: 'neutral', desc: '' };
 
     if (isFullBull) {
-      if (slope5 > 0 && slope10 > 0 && slope20 > 0) {
+      if (belowAnnual) {
+        pattern = {
+          type: 'bull_broken_240',
+          label: '急殺破年線（轉弱警示）',
+          cls: 'bear',
+          desc: `均線尚未翻空，但${posSummary}`,
+        };
+      } else if (belowQuarter) {
+        pattern = {
+          type: 'bull_broken_60',
+          label: '均線尚多頭（回破季線）',
+          cls: 'neutral',
+          desc: `中長均線仍呈多頭順序，惟短線回落跌破季線；${posSummary}`,
+        };
+      } else if (slope5 > 0 && slope10 > 0 && slope20 > 0) {
         pattern = {
           type: 'bull_strong',
           label: '多頭排列（偏多）',
@@ -855,78 +893,102 @@
       if (slope5 < 0 && slope10 < 0 && slope20 < 0) {
         pattern = {
           type: 'bear_strong',
-          label: '空頭排列（偏空）',
+          label: belowAnnual ? '空頭排列（破年線・偏空）' : '空頭排列（偏空）',
           cls: 'bear',
-          desc: orderedAll.length >= 6
+          desc: (orderedAll.length >= 6
             ? '短中長期均線全數反向蓋頭排列（週線 < 雙週線 < 月線 < 季線 < 半年線 < 年線），且由左上往右下發散，呈標準空頭排列（偏空）。'
-            : '短期均線全面在長期均線之下且由左上往右下傾斜發散，呈空頭排列（偏空）。',
+            : '短期均線全面在長期均線之下且由左上往右下傾斜發散，呈空頭排列（偏空）。') + (posSummary ? posSummary : ''),
         };
       } else {
         pattern = {
           type: 'bear',
-          label: '空頭排列（偏空・反彈）',
+          label: belowAnnual ? '空頭排列（年線下反彈）' : '空頭排列（偏空・反彈）',
           cls: 'bear',
-          desc: '短中長期均線仍在長期均線之下呈空頭排列，惟 5MA／10MA 極短線跌勢收斂或反彈，仍屬偏空格局。',
+          desc: `短中長期均線仍處空頭排列，惟 5MA／10MA 極短線跌勢收斂；${posSummary}`,
         };
       }
     } else if (isMidLongBull) {
-      pattern = {
-        type: 'mid_bull',
-        label: '中長多頭（短線修正）',
-        cls: 'bull',
-        desc: '月線以上中長期均線仍維持多頭排列，惟 5MA（週線）／10MA（雙週線）處於短線回檔或測試防守階段。',
-      };
+      if (belowAnnual) {
+        pattern = {
+          type: 'mid_bull_broken_240',
+          label: '急跌破年線（中長轉弱）',
+          cls: 'bear',
+          desc: `中長期均線雖仍未完全翻轉，但${posSummary}`,
+        };
+      } else if (belowQuarter) {
+        pattern = {
+          type: 'mid_bull_broken_60',
+          label: '跌破季線（波段修正）',
+          cls: 'bear',
+          desc: `半年線／年線順序尚在，但現價已跌破月線與季線轉弱；${posSummary}`,
+        };
+      } else {
+        pattern = {
+          type: 'mid_bull',
+          label: '中長多頭（短線修正）',
+          cls: 'bull',
+          desc: `月線以上中長期均線仍維持多頭排列，惟 5MA（週線）／10MA（雙週線）處於短線回檔；${posSummary}`,
+        };
+      }
     } else if (isMidLongBear) {
       pattern = {
         type: 'mid_bear',
-        label: '中長空頭（短線反彈）',
+        label: belowAnnual ? '中長空頭（年線下）' : '中長空頭（短線反彈）',
         cls: 'bear',
-        desc: '月線、季線等中長期均線呈空頭蓋頭排列，惟極短線 5MA／10MA 出現止穩反彈試探。',
+        desc: `月線、季線等中長期均線呈空頭蓋頭排列，惟極短線 5MA／10MA 出現止穩試探；${posSummary}`,
       };
     } else if (isShortBull) {
       pattern = {
         type: 'short_bull',
-        label: '短線多頭排列（偏多）',
-        cls: 'bull',
-        desc: '5MA（週線）> 10MA（雙週線）> 20MA（月線）短線均線由左下往右上形成短多排列，短波段動能轉強。',
+        label: belowAnnual ? '年線下反彈（短線轉多）' : pressureMas.length ? '短線多頭（挑戰中長壓）' : '短線多頭排列（偏多）',
+        cls: belowAnnual ? 'neutral' : 'bull',
+        desc: `5MA（週線）> 10MA（雙週線）> 20MA（月線）短線均線形成多頭排列，短波段動能轉強；${posSummary}`,
       };
     } else if (isShortBear) {
-      if (isNum(cur60) && cur20 <= cur60) {
+      if (belowAnnual && belowAllMas) {
+        const below240Order = isNum(cur20) && isNum(cur240) && cur20 <= cur240;
+        pattern = {
+          type: 'bear_below_annual',
+          label: below240Order ? '空頭格局（跌破年線・全均線下）' : '空頭修正（跌破年線・偏空）',
+          cls: 'bear',
+          desc: `${below240Order ? '5MA < 10MA < 月線 < 年線（240MA）且' : '5MA（週線）< 10MA（雙週線）< 月線 < 季線呈空頭發散，且'}${posSummary}`,
+        };
+      } else if (isNum(cur60) && cur20 <= cur60) {
         pattern = {
           type: 'short_mid_bear',
-          label: '短中期空頭（偏空）',
+          label: belowAnnual ? '短中期空頭（跌破年線）' : '短中期空頭（偏空）',
           cls: 'bear',
-          desc: '5MA（週線）< 10MA（雙週線）< 月線 < 季線呈短中期偏空發散，短線與波段承壓整理，須待重返 5MA／10MA 防守。',
+          desc: `5MA（週線）< 10MA（雙週線）< 月線 < 季線呈短中期偏空發散；${posSummary}`,
         };
       } else {
         pattern = {
           type: 'short_bear',
-          label: '短線修正（短空）',
+          label: belowAnnual ? '跌破年線（短線轉空）' : belowQuarter ? '跌破季線（波段轉空）' : '短線修正（短空）',
           cls: 'bear',
-          desc: '5MA（週線）與 10MA（雙週線）低於月線呈現短線空頭順序，惟中長期季線／年線仍在下方提供支撐，屬高檔回檔修正格局。',
+          desc: `5MA（週線）與 10MA（雙週線）低於月線呈現短線空頭順序；${posSummary}`,
         };
       }
     } else {
       if (isNum(cur5) && isNum(cur10) && cur5 > cur10 && (!isNum(cur20) || cur5 < cur20)) {
         pattern = {
           type: 'entangled_up',
-          label: '均線糾結（短線止穩）',
-          cls: 'neutral',
-          desc: '5MA（週線）已向上領先 10MA（雙週線）試圖止穩，但中長期均線仍互相交錯或受制於月／季線反壓，處於區間整理期。',
+          label: belowAnnual ? '年線下整理（短線止穩）' : '均線糾結（短線止穩）',
+          cls: belowAnnual ? 'bear' : 'neutral',
+          desc: `5MA（週線）領先站回 10MA（雙週線）之上出現止穩訊號；${posSummary}`,
         };
-      } else if (isNum(cur5) && isNum(cur10) && cur5 < cur10 && slope60 >= 0) {
+      } else if (isNum(cur5) && isNum(cur10) && cur5 < cur10 && slope60 >= 0 && !belowQuarter) {
         pattern = {
           type: 'entangled_down',
           label: '均線糾結（短線承壓）',
           cls: 'neutral',
-          desc: '5MA（週線）暫壓於 10MA（雙週線）下方，各期均線互相交錯糾結，觀察 10MA 與月線防守狀況。',
+          desc: `5MA（週線）暫壓於 10MA（雙週線）下方；${posSummary}`,
         };
       } else {
         pattern = {
           type: 'entangled',
-          label: '均線糾結（整理）',
-          cls: 'neutral',
-          desc: '短中長期均線相互交錯糾結，多空方向未明，可依 5MA 與 10MA 短線防守觀察突破方向。',
+          label: belowAnnual ? '年線下空頭震盪' : '均線糾結（整理）',
+          cls: belowAnnual ? 'bear' : 'neutral',
+          desc: `各期均線交錯整理，依 5MA 與 10MA 防守觀察方向；${posSummary}`,
         };
       }
     }
@@ -1049,6 +1111,10 @@
       : timeStr(q.time, 'Asia/Taipei');
     $('#sheet-title').textContent = meta.name;
     $('#sheet-sub').textContent = `${q.group === 'fut' ? `${q.contract || ''} ${q.symbol || ''}` : meta.symbol} · ${q.source || ''} · ${tzNote}`;
+    const btBtn = $('#sheet-bt-btn');
+    if (btBtn) {
+      btBtn.hidden = !(Array.isArray(q.daily) && q.daily.length >= 30 && key !== 'FGI');
+    }
     $('#sheet-price').innerHTML = `<span class="${dir}">${fmt(q.price, d)}</span>`;
     $('#sheet-chg').className = `chg ${dir}`;
     $('#sheet-chg').innerHTML = `<span>${arrow(dir)} ${signed(chg, d)}</span><span class="pct">${signed(pct, 2)}%</span>`;
@@ -1274,6 +1340,7 @@
     localStorage.setItem('stockdash:scheme', state.scheme);
     applyScheme();
     if (state.openKey) updateSheet(true);
+    window.dispatchEvent(new CustomEvent('stockdash:scheme', { detail: { scheme: state.scheme } }));
   });
   $('#btn-refresh').addEventListener('click', () => refreshAll(true));
   $('#status-line').addEventListener('click', () => refreshAll(true));
@@ -1281,6 +1348,12 @@
   $('#fx-card').addEventListener('click', () => openSheet('USDTWD'));
   $('#sheet-close').addEventListener('click', closeSheet);
   $('#sheet-backdrop').addEventListener('click', closeSheet);
+  $('#sheet-bt-btn')?.addEventListener('click', () => {
+    const key = state.openKey;
+    if (!key) return;
+    closeSheet();
+    window.__STOCKDASH_OPEN_BACKTEST__?.(key);
+  });
   document.addEventListener('keydown', (e) => e.key === 'Escape' && state.openKey && closeSheet());
   $('#sheet-tabs').addEventListener('click', (e) => {
     const b = e.target.closest('.tab');
@@ -1295,6 +1368,157 @@
     sheet.addEventListener('touchstart', (e) => { if (sheet.scrollTop <= 0 && !e.target.closest('.chart-main,.chart-rsi')) y0 = e.touches[0].clientY; }, { passive: true });
     sheet.addEventListener('touchend', (e) => { if (y0 != null && e.changedTouches[0].clientY - y0 > 90) closeSheet(); y0 = null; }, { passive: true });
   })();
+
+  // ---------------- 回測用歷史日 K 載入橋接 ----------------
+  const btHistCache = new Map();
+  async function fetchYahooChartDaily(sym, range = '5y') {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=${encodeURIComponent(range)}&interval=1d&_=${Math.floor(Date.now() / 60000)}`;
+    const j = await viaProxy(url, {}, (x) => Array.isArray(x?.chart?.result) && x.chart.result[0]?.timestamp?.length > 5);
+    const resp = j.chart.result[0];
+    const m = resp.meta || {};
+    const tz = m.exchangeTimezoneName || (sym.endsWith('.TW') || sym.endsWith('.TWO') || sym === '^TWII' ? 'Asia/Taipei' : 'America/New_York');
+    const ts = resp.timestamp || [];
+    const q = resp.indicators?.quote?.[0] || {};
+    const adjArr = resp.indicators?.adjclose?.[0]?.adjclose || [];
+    const byDate = new Map();
+    for (let i = 0; i < ts.length; i++) {
+      const c = q.close?.[i];
+      if (!isNum(c) || c <= 0 || !isNum(ts[i])) continue;
+      const date = tzParts(ts[i] * 1000, tz).date;
+      const o0 = q.open?.[i], h0 = q.high?.[i], l0 = q.low?.[i], ac0 = adjArr[i];
+      const o = isNum(o0) && o0 > 0 ? o0 : c;
+      const h = isNum(h0) && h0 > 0 ? Math.max(h0, o, c) : Math.max(o, c);
+      const l = isNum(l0) && l0 > 0 ? Math.min(l0, o, c) : Math.min(o, c);
+      const adj = isNum(ac0) && ac0 > 0 ? ac0 : c;
+      byDate.set(date, { date, o, h, l, c, adj, v: q.volume?.[i] ?? 0 });
+    }
+    const rows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return {
+      symbol: m.symbol || sym,
+      name: m.shortName || m.longName || sym,
+      currency: m.currency || '',
+      hasAdj: adjArr.some((v) => isNum(v) && v > 0),
+      source: 'Yahoo Finance',
+      rows,
+    };
+  }
+
+  async function fetchFinMindDaily(stockId, years = 5) {
+    const start = new Date(Date.now() - years * 365.25 * 86400000).toISOString().slice(0, 10);
+    const r = await fetchWithTimeout(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${encodeURIComponent(stockId)}&start_date=${start}`, {}, 9000);
+    if (!r.ok) throw new Error(`FinMind HTTP ${r.status}`);
+    const j = await r.json();
+    if (!Array.isArray(j?.data) || j.data.length < 10) throw new Error('FinMind no data');
+    const byDate = new Map();
+    for (const row of j.data) {
+      const c = num(row.close);
+      if (!row.date || !isNum(c) || c <= 0) continue;
+      const o0 = num(row.open), h0 = num(row.max), l0 = num(row.min);
+      const o = isNum(o0) && o0 > 0 ? o0 : c;
+      const h = isNum(h0) && h0 > 0 ? Math.max(h0, o, c) : Math.max(o, c);
+      const l = isNum(l0) && l0 > 0 ? Math.min(l0, o, c) : Math.min(o, c);
+      byDate.set(row.date, { date: row.date, o, h, l, c, adj: c, v: num(row.Trading_Volume) ?? 0 });
+    }
+    const rows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+    return {
+      symbol: `${stockId}.TW`,
+      name: `台股 ${stockId}`,
+      currency: 'TWD',
+      hasAdj: false,
+      source: 'FinMind 台股日線（未還原）',
+      rows,
+    };
+  }
+
+  window.__STOCKDASH_FETCH_DAILY__ = async function (rawInput, range = '5y') {
+    const key = String(rawInput || '').trim();
+    const upper = key.toUpperCase();
+    const cacheKey = `${upper}|${range}`;
+    if (btHistCache.has(cacheKey)) return btHistCache.get(cacheKey);
+
+    const builtInKey = state.quotes[key] ? key : state.quotes[upper] ? upper : null;
+    const q = builtInKey ? state.quotes[builtInKey] : null;
+    const meta = builtInKey ? META[builtInKey] : null;
+    const isBuiltIn2YOnly = range === '6m' || range === '1y' || range === '2y';
+
+    const fromBuiltIn = () => {
+      if (!q || !Array.isArray(q.daily) || q.daily.length < 10) return null;
+      const tz = q.tz || meta?.tz || 'UTC';
+      const rows = alignedDaily(q, tz).map((r) => ({ ...r, adj: r.c }));
+      return {
+        key: builtInKey,
+        symbol: meta?.y || meta?.symbol || builtInKey,
+        name: meta?.name || q.name || builtInKey,
+        currency: q.currency || '',
+        hasAdj: false,
+        source: '內建看盤快照',
+        rows,
+      };
+    };
+
+    if (builtInKey && isBuiltIn2YOnly) {
+      const localRes = fromBuiltIn();
+      if (localRes) {
+        btHistCache.set(cacheKey, localRes);
+        return localRes;
+      }
+    }
+
+    const candidates = [];
+    if (meta?.y) {
+      candidates.push(meta.y);
+    } else if (/^\d{4,6}[A-Z]?$/.test(upper)) {
+      candidates.push(`${upper}.TW`, `${upper}.TWO`);
+    } else {
+      candidates.push(upper);
+    }
+
+    for (const sym of candidates) {
+      try {
+        const res = await fetchYahooChartDaily(sym, range === '2y' || range === '1y' || range === '6m' ? '2y' : range);
+        if (res.rows.length >= 20) {
+          const out = {
+            key: builtInKey || upper,
+            symbol: res.symbol,
+            name: meta?.name || res.name || upper,
+            currency: res.currency,
+            hasAdj: res.hasAdj,
+            source: res.source,
+            rows: res.rows,
+          };
+          btHistCache.set(cacheKey, out);
+          return out;
+        }
+      } catch {}
+    }
+
+    if (/^\d{4,6}[A-Z]?$/.test(upper)) {
+      try {
+        const years = range === '5y' ? 5 : range === '3y' ? 3 : 2;
+        const fmRes = await fetchFinMindDaily(upper, years);
+        if (fmRes.rows.length >= 20) {
+          const out = {
+            key: builtInKey || upper,
+            symbol: fmRes.symbol,
+            name: meta?.name || fmRes.name,
+            currency: 'TWD',
+            hasAdj: false,
+            source: fmRes.source,
+            rows: fmRes.rows,
+          };
+          btHistCache.set(cacheKey, out);
+          return out;
+        }
+      } catch {}
+    }
+
+    const fallback = fromBuiltIn();
+    if (fallback) {
+      btHistCache.set(cacheKey, fallback);
+      return fallback;
+    }
+    throw new Error(`找不到「${key}」的歷史日K資料（台股請輸入代號如 2317／006208，美股如 NVDA／SPY）`);
+  };
 
   // ---------------- 更新循環 ----------------
   let busy = false;

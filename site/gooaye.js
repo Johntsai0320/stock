@@ -162,12 +162,15 @@
   }
 
   function setView(view) {
-    gState.view = view === 'gooaye' ? 'gooaye' : 'market';
+    gState.view = view === 'gooaye' ? 'gooaye' : view === 'backtest' ? 'backtest' : 'market';
     const isG = gState.view === 'gooaye';
+    const isB = gState.view === 'backtest';
     const vMarket = $('#view-market');
     const vGooaye = $('#view-gooaye');
-    if (vMarket) vMarket.hidden = isG;
+    const vBacktest = $('#view-backtest');
+    if (vMarket) vMarket.hidden = isG || isB;
     if (vGooaye) vGooaye.hidden = !isG;
+    if (vBacktest) vBacktest.hidden = !isB;
 
     document.querySelectorAll('.vtab').forEach((btn) => {
       const active = btn.dataset.view === gState.view;
@@ -180,7 +183,9 @@
     } else if (isG) {
       renderRegimeSection(window.__STOCKDASH_QUOTES__ || {});
     }
+    window.dispatchEvent(new CustomEvent('stockdash:view', { detail: { view: gState.view } }));
   }
+  window.__STOCKDASH_SET_VIEW__ = setView;
 
   async function loadData() {
     gState.loading = true;
