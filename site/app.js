@@ -731,7 +731,7 @@
   function openSheet(key) {
     state.openKey = key;
     const q = state.quotes[key];
-    const hasDaily = q?.daily?.length > 20;
+    const hasDaily = q?.daily?.length >= 5;
     if (!hasDaily) state.range = '1d';
     for (const b of document.querySelectorAll('#sheet-tabs .tab')) {
       b.disabled = b.dataset.range !== '1d' && !hasDaily;
@@ -758,14 +758,18 @@
 
   // ---------------- 均線型態與多空排列、黃金/死亡交叉分析 ----------------
   function analyzeMovingAverages(rows, currentPrice) {
-    if (!rows || rows.length < 20) return null;
+    if (!rows || rows.length < 5) return null;
     const closes = rows.map((r) => r.c);
     const len = closes.length;
+    const m5 = sma(closes, 5);
+    const m10 = sma(closes, 10);
     const m20 = sma(closes, 20);
     const m60 = sma(closes, 60);
     const m120 = sma(closes, 120);
     const m240 = sma(closes, 240);
 
+    const cur5 = m5[len - 1];
+    const cur10 = m10[len - 1];
     const cur20 = m20[len - 1];
     const cur60 = m60[len - 1];
     const cur120 = m120[len - 1];
@@ -775,103 +779,169 @@
     const calcBias = (ma) => (isNum(ma) && ma !== 0 ? +(((p - ma) / ma) * 100).toFixed(2) : null);
 
     const mas = {
-      ma20: { name: '月線 (20MA)', label: '月線', days: 20, val: cur20, bias: calcBias(cur20), color: '#f2b544' },
-      ma60: { name: '季線 (60MA)', label: '季線', days: 60, val: cur60, bias: calcBias(cur60), color: '#5ab0f0' },
-      ma120: { name: '半年線 (120MA)', label: '半年線', days: 120, val: cur120, bias: calcBias(cur120), color: '#c678dd' },
-      ma240: { name: '年線 (240MA)', label: '年線', days: 240, val: cur240, bias: calcBias(cur240), color: '#4cd964' },
+      ma5: { name: '週線 (5MA)', label: '週線', days: 5, role: '短線強弱與極短線防守線', val: cur5, bias: calcBias(cur5), color: '#f1f5f9' },
+      ma10: { name: '雙週線 (10MA)', label: '雙週線', days: 10, role: '短線波段與防守參考', val: cur10, bias: calcBias(cur10), color: '#22d3ee' },
+      ma20: { name: '月線 (20MA)', label: '月線', days: 20, role: '波段多空生命線', val: cur20, bias: calcBias(cur20), color: '#f2b544' },
+      ma60: { name: '季線 (60MA)', label: '季線', days: 60, role: '中期趨勢分水嶺', val: cur60, bias: calcBias(cur60), color: '#5ab0f0' },
+      ma120: { name: '半年線 (120MA)', label: '半年線', days: 120, role: '中長線支撐壓力', val: cur120, bias: calcBias(cur120), color: '#c678dd' },
+      ma240: { name: '年線 (240MA)', label: '年線', days: 240, role: '長期牛熊分界線', val: cur240, bias: calcBias(cur240), color: '#4cd964' },
     };
 
-    // 檢查近 5 交易日均線走向（斜率）
-    const prevIdx = Math.max(0, len - 6);
-    const slope20 = cur20 != null && m20[prevIdx] != null ? cur20 - m20[prevIdx] : 0;
-    const slope60 = cur60 != null && m60[prevIdx] != null ? cur60 - m60[prevIdx] : 0;
+    // 短線 5MA（週線）與 10MA（雙週線）防守判定
+    let shortDefense = null;
+    if (isNum(cur5) && isNum(cur10)) {
+      if (p >= cur5 && p >= cur10) {
+        shortDefense = cur5 >= cur10
+          ? { label: '守穩 5MA・極短線偏強', cls: 'bull', text: '現價站穩 5MA（週線）與 10MA（雙週線）之上，極短線與短波段防守皆穩健偏多。' }
+          : { label: '重返 5MA・10MA 之上', cls: 'bull', text: '現價站上 5MA（週線）與 10MA（雙週線）防守參考，短線止穩轉強，觀察 5MA 能否上穿 10MA。' };
+      } else if (p < cur5 && p >= cur10) {
+        shortDefense = { label: '破 5MA・守 10MA 防守', cls: 'neutral', text: '跌破 5MA（極短線防守線），短線動能降溫，回測 10MA（雙週線）短線波段防守支撐。' };
+      } else if (p >= cur5 && p < cur10) {
+        shortDefense = { label: '站上 5MA・測 10MA 壓', cls: 'neutral', text: '重回 5MA（週線）極短線防守線之上，出現止穩契機，上方挑戰 10MA（雙週線）反壓。' };
+      } else {
+        shortDefense = { label: '跌破 5MA・10MA 防守', cls: 'bear', text: '現價位於 5MA（週線）與 10MA（雙週線）防守線之下，極短線與短波段皆偏弱整理。' };
+      }
+    } else if (isNum(cur5)) {
+      shortDefense = p >= cur5
+        ? { label: '站上 5MA 週線', cls: 'bull', text: '現價站穩 5MA（週線）極短線防守線之上。' }
+        : { label: '跌破 5MA 週線', cls: 'bear', text: '現價跌破 5MA（週線）極短線防守線，短線轉弱。' };
+    }
+
+    // 均線走向（斜率）
+    const slopeAt = (arr, cur, lookback) => {
+      const idx = Math.max(0, len - 1 - lookback);
+      return isNum(cur) && isNum(arr[idx]) ? cur - arr[idx] : 0;
+    };
+    const slope5 = slopeAt(m5, cur5, 3);
+    const slope10 = slopeAt(m10, cur10, 3);
+    const slope20 = slopeAt(m20, cur20, 5);
+    const slope60 = slopeAt(m60, cur60, 5);
+
+    const orderedAll = [cur5, cur10, cur20, cur60, cur120, cur240].filter(isNum);
+    const orderedMidLong = [cur20, cur60, cur120, cur240].filter(isNum);
+    const hasShort3 = isNum(cur5) && isNum(cur10) && isNum(cur20);
+
+    const isMonotoneDesc = (arr) => arr.length >= 2 && arr.every((v, i) => i === 0 || arr[i - 1] >= v);
+    const isMonotoneAsc = (arr) => arr.length >= 2 && arr.every((v, i) => i === 0 || arr[i - 1] <= v);
+
+    const isFullBull = isMonotoneDesc(orderedAll);
+    const isFullBear = isMonotoneAsc(orderedAll);
+    const isMidLongBull = isMonotoneDesc(orderedMidLong);
+    const isMidLongBear = isMonotoneAsc(orderedMidLong);
+    const isShortBull = hasShort3 && cur5 >= cur10 && cur10 >= cur20;
+    const isShortBear = hasShort3 && cur5 <= cur10 && cur10 <= cur20;
 
     let pattern = { type: 'neutral', label: '均線糾結（整理）', cls: 'neutral', desc: '' };
 
-    const hasAll4 = isNum(cur20) && isNum(cur60) && isNum(cur120) && isNum(cur240);
-    const has3 = isNum(cur20) && isNum(cur60) && isNum(cur120);
-
-    const isBullOrder = hasAll4
-      ? (cur20 >= cur60 && cur60 >= cur120 && cur120 >= cur240)
-      : has3
-      ? (cur20 >= cur60 && cur60 >= cur120)
-      : (cur20 >= cur60);
-
-    const isBearOrder = hasAll4
-      ? (cur20 <= cur60 && cur60 <= cur120 && cur120 <= cur240)
-      : has3
-      ? (cur20 <= cur60 && cur60 <= cur120)
-      : (cur20 <= cur60);
-
-    if (isBullOrder) {
-      if (slope20 > 0 && slope60 > 0) {
+    if (isFullBull) {
+      if (slope5 > 0 && slope10 > 0 && slope20 > 0) {
         pattern = {
           type: 'bull_strong',
           label: '多頭排列（偏多）',
           cls: 'bull',
-          desc: hasAll4
-            ? '短期均線在長期均線之上（月線 > 季線 > 半年線 > 年線），且均線由左下往右上揚升發展，呈標準多頭排列（偏多格局）。'
-            : '短期均線在長期均線之上且均線由左下往右上發展，呈多頭排列（偏多格局）。',
+          desc: orderedAll.length >= 6
+            ? '短中長期均線全數由上而下順序排列（週線 > 雙週線 > 月線 > 季線 > 半年線 > 年線），且由左下往右上揚升發展，呈標準多頭排列（偏多）。'
+            : '短期均線全面在長期均線之上且由左下往右上揚升發展，呈多頭排列（偏多）。',
         };
       } else {
         pattern = {
           type: 'bull',
           label: '多頭排列（偏多・震盪）',
           cls: 'bull',
-          desc: '短期均線仍維持在長期均線之上，惟短期均線走平或微幅回檔，維持偏多震盪整理。',
+          desc: '各期均線維持多頭順向排列，惟短天期均線（5MA／10MA）走平或微幅收斂，維持偏多震盪整理。',
         };
       }
-    } else if (isBearOrder) {
-      if (slope20 < 0 && slope60 < 0) {
+    } else if (isFullBear) {
+      if (slope5 < 0 && slope10 < 0 && slope20 < 0) {
         pattern = {
           type: 'bear_strong',
           label: '空頭排列（偏空）',
           cls: 'bear',
-          desc: hasAll4
-            ? '短期均線在長期均線之下（月線 < 季線 < 半年線 < 年線），且均線由左上往右下傾斜發散，呈標準空頭排列（偏空格局）。'
-            : '短期均線在長期均線之下且均線由左上往右下發展，呈空頭排列（偏空格局）。',
+          desc: orderedAll.length >= 6
+            ? '短中長期均線全數反向蓋頭排列（週線 < 雙週線 < 月線 < 季線 < 半年線 < 年線），且由左上往右下發散，呈標準空頭排列（偏空）。'
+            : '短期均線全面在長期均線之下且由左上往右下傾斜發散，呈空頭排列（偏空）。',
         };
       } else {
         pattern = {
           type: 'bear',
           label: '空頭排列（偏空・反彈）',
           cls: 'bear',
-          desc: '短期均線仍在長期均線之下，均線走向偏弱，惟短線有跌深收斂或反彈跡象，仍屬偏空格局。',
+          desc: '短中長期均線仍在長期均線之下呈空頭排列，惟 5MA／10MA 極短線跌勢收斂或反彈，仍屬偏空格局。',
+        };
+      }
+    } else if (isMidLongBull) {
+      pattern = {
+        type: 'mid_bull',
+        label: '中長多頭（短線修正）',
+        cls: 'bull',
+        desc: '月線以上中長期均線仍維持多頭排列，惟 5MA（週線）／10MA（雙週線）處於短線回檔或測試防守階段。',
+      };
+    } else if (isMidLongBear) {
+      pattern = {
+        type: 'mid_bear',
+        label: '中長空頭（短線反彈）',
+        cls: 'bear',
+        desc: '月線、季線等中長期均線呈空頭蓋頭排列，惟極短線 5MA／10MA 出現止穩反彈試探。',
+      };
+    } else if (isShortBull) {
+      pattern = {
+        type: 'short_bull',
+        label: '短線多頭排列（偏多）',
+        cls: 'bull',
+        desc: '5MA（週線）> 10MA（雙週線）> 20MA（月線）短線均線由左下往右上形成短多排列，短波段動能轉強。',
+      };
+    } else if (isShortBear) {
+      if (isNum(cur60) && cur20 <= cur60) {
+        pattern = {
+          type: 'short_mid_bear',
+          label: '短中期空頭（偏空）',
+          cls: 'bear',
+          desc: '5MA（週線）< 10MA（雙週線）< 月線 < 季線呈短中期偏空發散，短線與波段承壓整理，須待重返 5MA／10MA 防守。',
+        };
+      } else {
+        pattern = {
+          type: 'short_bear',
+          label: '短線修正（短空）',
+          cls: 'bear',
+          desc: '5MA（週線）與 10MA（雙週線）低於月線呈現短線空頭順序，惟中長期季線／年線仍在下方提供支撐，屬高檔回檔修正格局。',
         };
       }
     } else {
-      if (cur20 > cur60 && cur20 > cur120) {
+      if (isNum(cur5) && isNum(cur10) && cur5 > cur10 && (!isNum(cur20) || cur5 < cur20)) {
         pattern = {
-          type: 'rebound',
-          label: '短多震盪格局',
-          cls: 'bull',
-          desc: '月線已向上穿越季線與半年線轉強，但中長期均線尚未完全轉為順向多頭，處於轉折整理期。',
+          type: 'entangled_up',
+          label: '均線糾結（短線止穩）',
+          cls: 'neutral',
+          desc: '5MA（週線）已向上領先 10MA（雙週線）試圖止穩，但中長期均線仍互相交錯或受制於月／季線反壓，處於區間整理期。',
         };
-      } else if (cur20 < cur60 && cur20 < cur120) {
+      } else if (isNum(cur5) && isNum(cur10) && cur5 < cur10 && slope60 >= 0) {
         pattern = {
-          type: 'pullback',
-          label: '短空震盪格局',
-          cls: 'bear',
-          desc: '月線跌破季線與半年線轉弱，但中長期均線仍在下方具支撐，呈現高檔回檔修正格局。',
+          type: 'entangled_down',
+          label: '均線糾結（短線承壓）',
+          cls: 'neutral',
+          desc: '5MA（週線）暫壓於 10MA（雙週線）下方，各期均線互相交錯糾結，觀察 10MA 與月線防守狀況。',
         };
       } else {
         pattern = {
           type: 'entangled',
           label: '均線糾結（整理）',
           cls: 'neutral',
-          desc: '短期與長期均線相互交錯糾結，多空方向未明，處於區間震盪整理型態。',
+          desc: '短中長期均線相互交錯糾結，多空方向未明，可依 5MA 與 10MA 短線防守觀察突破方向。',
         };
       }
     }
 
-    // 均線交叉檢測（黃金交叉 / 死亡交叉）
+    // 均線交叉檢測（黃金交叉 / 死亡交叉：納入 5MA × 10MA、5MA × 20MA、10MA × 20MA 與中長均線組合）
     const pairs = [
-      { name: '月線 × 季線', fast: m20, slow: m60, fName: '月線(20MA)', sName: '季線(60MA)' },
-      { name: '月線 × 半年線', fast: m20, slow: m120, fName: '月線(20MA)', sName: '半年線(120MA)' },
-      { name: '月線 × 年線', fast: m20, slow: m240, fName: '月線(20MA)', sName: '年線(240MA)' },
-      { name: '季線 × 半年線', fast: m60, slow: m120, fName: '季線(60MA)', sName: '半年線(120MA)' },
-      { name: '季線 × 年線', fast: m60, slow: m240, fName: '季線(60MA)', sName: '年線(240MA)' },
-      { name: '半年線 × 年線', fast: m120, slow: m240, fName: '半年線(120MA)', sName: '年線(240MA)' },
+      { name: '週線 × 雙週線', group: 'short', fast: m5, slow: m10, fName: '週線(5MA)', sName: '雙週線(10MA)' },
+      { name: '週線 × 月線', group: 'short', fast: m5, slow: m20, fName: '週線(5MA)', sName: '月線(20MA)' },
+      { name: '雙週線 × 月線', group: 'short', fast: m10, slow: m20, fName: '雙週線(10MA)', sName: '月線(20MA)' },
+      { name: '月線 × 季線', group: 'mid', fast: m20, slow: m60, fName: '月線(20MA)', sName: '季線(60MA)' },
+      { name: '月線 × 半年線', group: 'mid', fast: m20, slow: m120, fName: '月線(20MA)', sName: '半年線(120MA)' },
+      { name: '月線 × 年線', group: 'mid', fast: m20, slow: m240, fName: '月線(20MA)', sName: '年線(240MA)' },
+      { name: '季線 × 半年線', group: 'mid', fast: m60, slow: m120, fName: '季線(60MA)', sName: '半年線(120MA)' },
+      { name: '季線 × 年線', group: 'mid', fast: m60, slow: m240, fName: '季線(60MA)', sName: '年線(240MA)' },
+      { name: '半年線 × 年線', group: 'mid', fast: m120, slow: m240, fName: '半年線(120MA)', sName: '年線(240MA)' },
     ];
 
     const crossEvents = [];
@@ -883,6 +953,7 @@
         if (f0 > s0 && f1 <= s1) {
           crossEvents.push({
             pair: pair.name,
+            group: pair.group,
             type: 'golden',
             label: '黃金交叉（偏多訊號）',
             cls: 'bull',
@@ -894,6 +965,7 @@
         } else if (f0 < s0 && f1 >= s1) {
           crossEvents.push({
             pair: pair.name,
+            group: pair.group,
             type: 'death',
             label: '死亡交叉（偏空訊號）',
             cls: 'bear',
@@ -908,36 +980,46 @@
 
     crossEvents.sort((a, b) => a.daysAgo - b.daysAgo);
     const latestCross = crossEvents[0] || null;
+    const latestMidCross = crossEvents.find((e) => e.group === 'mid' && e !== latestCross) || null;
 
     return {
       mas,
+      shortDefense,
       pattern,
       latestCross,
+      latestMidCross,
       crossEvents,
     };
+  }
+
+  function renderCrossBox(ev, prefix = '') {
+    if (!ev) return '';
+    return `<div class="ma-cross-box ${ev.cls}">
+      <span class="ma-cross-tag">${prefix ? prefix + ' · ' : ''}${ev.type === 'golden' ? '✨ 黃金交叉（偏多訊號）' : '⚠️ 死亡交叉（偏空訊號）'}</span>
+      <span class="ma-cross-detail">${ev.desc} · <strong>${ev.date}</strong>（${ev.daysAgo === 0 ? '今日發生' : ev.daysAgo + ' 天前'}）</span>
+    </div>`;
   }
 
   function renderMaPanel(diag, d) {
     if (!diag) return '';
     const m = diag.mas;
     const crossHTML = diag.latestCross
-      ? `<div class="ma-cross-box ${diag.latestCross.cls}">
-          <span class="ma-cross-tag">${diag.latestCross.type === 'golden' ? '✨ 黃金交叉（偏多訊號）' : '⚠️ 死亡交叉（偏空訊號）'}</span>
-          <span class="ma-cross-detail">${diag.latestCross.desc} · <strong>${diag.latestCross.date}</strong>（${diag.latestCross.daysAgo === 0 ? '今日發生' : diag.latestCross.daysAgo + ' 天前'}）</span>
-        </div>`
+      ? renderCrossBox(diag.latestCross, diag.latestMidCross ? '最新交叉' : '')
+        + (diag.latestMidCross ? renderCrossBox(diag.latestMidCross, '中長期均線') : '')
       : '';
 
-    const items = [m.ma20, m.ma60, m.ma120, m.ma240].filter((item) => item && isNum(item.val));
+    const items = [m.ma5, m.ma10, m.ma20, m.ma60, m.ma120, m.ma240].filter((item) => item && isNum(item.val));
 
     return `<div class="ma-panel">
       <div class="ma-panel-head">
         <div class="ma-panel-title">均線型態與多空指標</div>
         <div class="ma-badges">
           <span class="ma-badge ${diag.pattern.cls}">${diag.pattern.label}</span>
+          ${diag.shortDefense ? `<span class="ma-badge ${diag.shortDefense.cls}">${diag.shortDefense.label}</span>` : ''}
           ${diag.latestCross ? `<span class="ma-badge ${diag.latestCross.cls}">${diag.latestCross.type === 'golden' ? '黃金交叉' : '死亡交叉'}</span>` : ''}
         </div>
       </div>
-      <p class="ma-desc">${diag.pattern.desc}</p>
+      <p class="ma-desc">${diag.pattern.desc}${diag.shortDefense ? `<span class="ma-short-note">${diag.shortDefense.text}</span>` : ''}</p>
       ${crossHTML}
       <div class="ma-grid">
         ${items
@@ -946,6 +1028,7 @@
             <div class="ma-name"><i style="background:${item.color}"></i>${item.name}</div>
             <div class="ma-val">${fmt(item.val, d)}</div>
             <div class="ma-bias ${item.bias >= 0 ? 'up' : 'down'}">乖離 ${signed(item.bias, 2)}%</div>
+            ${item.role ? `<div class="ma-role">${item.role}</div>` : ''}
           </div>`
           )
           .join('')}
@@ -995,7 +1078,13 @@
         ['1 週前', fmt(q.prevWeek, d)],
         ['1 個月前', fmt(q.prevMonth, d)],
         ['1 年前', fmt(q.prevYear, d)],
-        ['MA20', lastMA ? fmt(lastMA.value, d) : '—'],
+        ['週線 (5MA)', diag?.mas?.ma5?.val ? fmt(diag.mas.ma5.val, d) : '—'],
+        ['雙週線 (10MA)', diag?.mas?.ma10?.val ? fmt(diag.mas.ma10.val, d) : '—'],
+        ['月線 (20MA)', diag?.mas?.ma20?.val ? fmt(diag.mas.ma20.val, d) : (lastMA ? fmt(lastMA.value, d) : '—')],
+        ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
+        ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
+        ['年線 (240MA)', diag?.mas?.ma240?.val ? fmt(diag.mas.ma240.val, d) : '—'],
+        ['均線型態', diag?.pattern?.label || '—'],
         ['資料來源', 'CNN Business'],
       ];
     } else if (key === 'VIX') {
@@ -1008,7 +1097,13 @@
         ['最低', fmt(q.low, d)],
         ['昨收', fmt(q.prevClose, d)],
         ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
+        ['週線 (5MA)', diag?.mas?.ma5?.val ? fmt(diag.mas.ma5.val, d) : '—'],
+        ['雙週線 (10MA)', diag?.mas?.ma10?.val ? fmt(diag.mas.ma10.val, d) : '—'],
         [state.range === '1d' ? '分時 MA20' : '月線 (20MA)', lastMA ? fmt(lastMA.value, d) : '—'],
+        ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
+        ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
+        ['年線 (240MA)', diag?.mas?.ma240?.val ? fmt(diag.mas.ma240.val, d) : '—'],
+        ['均線型態', diag?.pattern?.label || '—'],
       ];
     } else {
       const volStat = isNum(q.turnoverYi) && (!isNum(q.volume) || q.volume <= 0)
@@ -1017,6 +1112,8 @@
       stats = [
         ['開盤', fmt(q.open, d)], ['最高', fmt(q.high, d)], ['最低', fmt(q.low, d)], [baseLabel, fmt(q.prevClose, d)],
         volStat, ['振幅', isNum(amp) ? amp.toFixed(2) + '%' : '—'],
+        ['週線 (5MA)', diag?.mas?.ma5?.val ? fmt(diag.mas.ma5.val, d) : '—'],
+        ['雙週線 (10MA)', diag?.mas?.ma10?.val ? fmt(diag.mas.ma10.val, d) : '—'],
         ['月線 (20MA)', diag?.mas?.ma20?.val ? fmt(diag.mas.ma20.val, d) : '—'],
         ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
         ['半年線 (120MA)', diag?.mas?.ma120?.val ? fmt(diag.mas.ma120.val, d) : '—'],
@@ -1046,6 +1143,8 @@
       const m = sma(vals, 20), r = rsi(vals, 14);
       return {
         kind: 'line', line,
+        ma5: [],
+        ma10: [],
         ma20: line.map((p, i) => (m[i] != null ? { time: p.time, value: m[i] } : null)),
         ma60: [],
         ma120: [],
@@ -1055,7 +1154,7 @@
     }
     const rows = alignedDaily(q, tz);
     const closes = rows.map((r) => r.c);
-    const m20 = sma(closes, 20), m60 = sma(closes, 60), m120 = sma(closes, 120), m240 = sma(closes, 240);
+    const m5 = sma(closes, 5), m10 = sma(closes, 10), m20 = sma(closes, 20), m60 = sma(closes, 60), m120 = sma(closes, 120), m240 = sma(closes, 240);
     const r = rsi(closes, 14);
     const n = { '3m': 63, '6m': 126, '1y': 260 }[state.range] || 126;
     const from = Math.max(0, rows.length - n);
@@ -1063,6 +1162,8 @@
     return {
       kind: 'candle',
       candles: sl(rows).map((x) => ({ time: x.date, open: x.o, high: x.h, low: x.l, close: x.c })),
+      ma5: sl(rows.map((x, i) => (m5[i] != null ? { time: x.date, value: m5[i] } : null))),
+      ma10: sl(rows.map((x, i) => (m10[i] != null ? { time: x.date, value: m10[i] } : null))),
       ma20: sl(rows.map((x, i) => (m20[i] != null ? { time: x.date, value: m20[i] } : null))),
       ma60: sl(rows.map((x, i) => (m60[i] != null ? { time: x.date, value: m60[i] } : null))),
       ma120: sl(rows.map((x, i) => (m120[i] != null ? { time: x.date, value: m120[i] } : null))),
@@ -1082,7 +1183,7 @@
     const c = colors();
     const { dir } = calc(q);
     const lineColor = c[dir];
-    const MA20 = '#f2b544', MA60 = '#5ab0f0', MA120 = '#c678dd', MA240 = '#4cd964';
+    const MA5 = '#f1f5f9', MA10 = '#22d3ee', MA20 = '#f2b544', MA60 = '#5ab0f0', MA120 = '#c678dd', MA240 = '#4cd964';
     const empty = s.kind === 'line' ? s.line.length < 2 : s.candles.length < 2;
 
     if (rebuild || !state.charts || state.charts.kind !== s.kind) {
@@ -1111,6 +1212,8 @@
       } else {
         price = main.addCandlestickSeries({ upColor: c.up, downColor: c.down, borderUpColor: c.up, borderDownColor: c.down, wickUpColor: c.up, wickDownColor: c.down, priceLineVisible: false });
       }
+      const ma5 = main.addLineSeries({ color: MA5, lineWidth: 1.4, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      const ma10 = main.addLineSeries({ color: MA10, lineWidth: 1.4, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const ma20 = main.addLineSeries({ color: MA20, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const ma60 = main.addLineSeries({ color: MA60, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       const ma120 = main.addLineSeries({ color: MA120, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
@@ -1120,7 +1223,7 @@
       rsiS.createPriceLine({ price: 30, color: 'rgba(255,255,255,0.25)', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
       // 兩圖時間軸同步
       main.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rsiC.timeScale().setVisibleLogicalRange(r));
-      state.charts = { kind: s.kind, main, rsi: rsiC, price, ma20, ma60, ma120, ma240, rsiS, baseLine: null };
+      state.charts = { kind: s.kind, main, rsi: rsiC, price, ma5, ma10, ma20, ma60, ma120, ma240, rsiS, baseLine: null };
     }
     if (empty) return;
     const ch = state.charts;
@@ -1133,6 +1236,8 @@
       ch.price.applyOptions({ upColor: c.up, downColor: c.down, borderUpColor: c.up, borderDownColor: c.down, wickUpColor: c.up, wickDownColor: c.down });
       ch.price.setData(s.candles);
     }
+    if (ch.ma5) ch.ma5.setData((s.ma5 || []).filter(Boolean));
+    if (ch.ma10) ch.ma10.setData((s.ma10 || []).filter(Boolean));
     ch.ma20.setData(s.ma20.filter(Boolean));
     ch.ma60.setData(s.ma60.filter(Boolean));
     if (ch.ma120) ch.ma120.setData((s.ma120 || []).filter(Boolean));
@@ -1148,10 +1253,12 @@
         `<span>分時走勢</span>`;
     } else {
       $('#sheet-legend').innerHTML =
-        `<span><i style="background:${MA20}"></i>月線 MA20</span>` +
-        (s.ma60.some(Boolean) ? `<span><i style="background:${MA60}"></i>季線 MA60</span>` : '') +
-        ((s.ma120 || []).some(Boolean) ? `<span><i style="background:${MA120}"></i>半年線 MA120</span>` : '') +
-        ((s.ma240 || []).some(Boolean) ? `<span><i style="background:${MA240}"></i>年線 MA240</span>` : '') +
+        ((s.ma5 || []).some(Boolean) ? `<span><i style="background:${MA5}"></i>週線 5MA</span>` : '') +
+        ((s.ma10 || []).some(Boolean) ? `<span><i style="background:${MA10}"></i>雙週線 10MA</span>` : '') +
+        (s.ma20.some(Boolean) ? `<span><i style="background:${MA20}"></i>月線 20MA</span>` : '') +
+        (s.ma60.some(Boolean) ? `<span><i style="background:${MA60}"></i>季線 60MA</span>` : '') +
+        ((s.ma120 || []).some(Boolean) ? `<span><i style="background:${MA120}"></i>半年線 120MA</span>` : '') +
+        ((s.ma240 || []).some(Boolean) ? `<span><i style="background:${MA240}"></i>年線 240MA</span>` : '') +
         `<span>日 K</span>`;
     }
   }

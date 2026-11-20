@@ -341,6 +341,11 @@ button { font: inherit; color: inherit; }
   color: var(--muted);
   line-height: 1.5;
 }
+.ma-short-note {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+}
 
 .ma-cross-box {
   background: hsl(225 12% 14%);
@@ -380,7 +385,7 @@ button { font: inherit; color: inherit; }
 }
 @media (min-width: 560px) {
   .ma-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 .ma-item {
@@ -420,6 +425,12 @@ button { font: inherit; color: inherit; }
   font-size: .72rem;
   font-weight: 600;
 }
+.ma-role {
+  font-size: .66rem;
+  color: var(--faint);
+  margin-top: 3px;
+  line-height: 1.35;
+}
 
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 0; }
 @media (min-width: 560px) { .stats { grid-template-columns: repeat(4, 1fr); } }
@@ -454,7 +465,7 @@ button { font: inherit; color: inherit; }
   .sheet { width: min(980px, 92vw); max-height: 90vh; padding: 16px 24px 24px; }
   .chart-main { height: 420px; }
   .chart-rsi { height: 130px; }
-  .stats { grid-template-columns: repeat(8, 1fr); }
+  .stats { grid-template-columns: repeat(7, 1fr); }
 }
 @media (min-width: 1280px) {
   #grid-us { grid-template-columns: repeat(3, 1fr); }

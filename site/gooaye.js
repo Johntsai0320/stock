@@ -62,7 +62,7 @@
   }
 
   function calcIndexMetrics(q, key) {
-    if (!q || !Array.isArray(q.daily) || q.daily.length < 20) return null;
+    if (!q || !Array.isArray(q.daily) || q.daily.length < 5) return null;
     const tz = q.tz || INDEX_TZ[key || q.key] || 'UTC';
     const byDate = new Map();
     for (const b of q.daily) {
@@ -104,8 +104,11 @@
       return sum / n;
     };
 
+    const ma5 = avg(5);
+    const ma10 = avg(10);
     const ma20 = avg(20);
     const ma60 = avg(60);
+    const ma120 = avg(120);
     const ma240 = avg(240);
 
     const win52 = rows.slice(-252);
@@ -118,8 +121,11 @@
     const pct52 = hi52 > lo52 ? Math.max(0, Math.min(100, ((price - lo52) / (hi52 - lo52)) * 100)) : 50;
 
     const bias = (ma) => (ma ? ((price - ma) / ma) * 100 : null);
+    const b5 = bias(ma5);
+    const b10 = bias(ma10);
     const b20 = bias(ma20);
     const b60 = bias(ma60);
+    const b120 = bias(ma120);
     const b240 = bias(ma240);
 
     let stage = '盤整觀察';
@@ -143,12 +149,16 @@
       }
     }
 
-    return { price, pct52, hi52, lo52, ma20, ma60, ma240, b20, b60, b240, stage, stageCls };
+    return { price, pct52, hi52, lo52, ma5, ma10, ma20, ma60, ma120, ma240, b5, b10, b20, b60, b120, b240, stage, stageCls };
   }
 
   function fmtBias(v) {
     if (v === null || !Number.isFinite(v)) return '—';
     return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+  }
+
+  function biasCls(v) {
+    return typeof v === 'number' && Number.isFinite(v) ? (v >= 0 ? 'up' : 'down') : '';
   }
 
   function setView(view) {
@@ -1032,7 +1042,7 @@
 
     const hints = [];
     if (tw) {
-      hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>。`);
+      hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距週線5MA <b>${fmtBias(tw.b5)}</b>、雙週線10MA <b>${fmtBias(tw.b10)}</b>、月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>。`);
     }
     if (marginSignal.hint) hints.push(marginSignal.hint);
     if (instSignal.hint) hints.push(instSignal.hint);
@@ -1099,9 +1109,12 @@
             <div class="g-reg-bar"><span style="width:${m.pct52.toFixed(1)}%"></span></div>
           </div>
           <div class="g-reg-mas">
-            <div><span>MA20</span><b class="${m.b20 >= 0 ? 'up' : 'down'}">${fmtBias(m.b20)}</b></div>
-            <div><span>季線60</span><b class="${m.b60 >= 0 ? 'up' : 'down'}">${fmtBias(m.b60)}</b></div>
-            <div><span>年線240</span><b class="${m.b240 >= 0 ? 'up' : 'down'}">${fmtBias(m.b240)}</b></div>
+            <div><span>週線5</span><b class="${biasCls(m.b5)}">${fmtBias(m.b5)}</b></div>
+            <div><span>雙週10</span><b class="${biasCls(m.b10)}">${fmtBias(m.b10)}</b></div>
+            <div><span>月線20</span><b class="${biasCls(m.b20)}">${fmtBias(m.b20)}</b></div>
+            <div><span>季線60</span><b class="${biasCls(m.b60)}">${fmtBias(m.b60)}</b></div>
+            <div><span>半年120</span><b class="${biasCls(m.b120)}">${fmtBias(m.b120)}</b></div>
+            <div><span>年線240</span><b class="${biasCls(m.b240)}">${fmtBias(m.b240)}</b></div>
           </div>
         </article>
       `;
