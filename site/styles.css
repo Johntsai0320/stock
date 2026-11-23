@@ -138,6 +138,7 @@ button { font: inherit; color: inherit; }
 .badge.stale { background: hsl(42 80% 50% / .15); color: var(--accent); }
 .badge.zone-badge { font-weight: 600; }
 .badge.z-efear, .badge.z-vix-high { background: hsl(356 80% 55% / .2); color: hsl(356 90% 72%); border: 1px solid hsl(356 80% 55% / .35); }
+.badge.z-vix-elev { background: hsl(18 88% 54% / .2); color: hsl(20 94% 70%); border: 1px solid hsl(18 88% 54% / .36); }
 .badge.z-fear, .badge.z-vix-mid { background: hsl(28 90% 55% / .2); color: hsl(32 95% 70%); border: 1px solid hsl(28 90% 55% / .35); }
 .badge.z-neutral { background: hsl(220 15% 50% / .22); color: hsl(220 20% 80%); border: 1px solid hsl(220 15% 60% / .3); }
 .badge.z-greed { background: hsl(150 60% 45% / .18); color: hsl(150 65% 65%); border: 1px solid hsl(150 60% 45% / .35); }
@@ -173,6 +174,14 @@ button { font: inherit; color: inherit; }
     hsl(38 92% 56%) 57%,
     hsl(356 82% 58%) 100%);
 }
+.zone-bar.vixtwn-bar {
+  background: linear-gradient(90deg,
+    hsl(180 65% 44%) 0%,
+    hsl(158 72% 44%) 18%,
+    hsl(42 92% 56%) 38%,
+    hsl(24 92% 55%) 62%,
+    hsl(356 84% 58%) 100%);
+}
 .zone-pin {
   position: absolute;
   top: 50%;
@@ -206,10 +215,21 @@ button { font: inherit; color: inherit; }
   background: hsl(225 12% 18%);
 }
 .zone-list li.active.z-efear, .zone-list li.active.z-vix-high { color: hsl(356 90% 72%); background: hsl(356 80% 55% / .16); }
+.zone-list li.active.z-vix-elev { color: hsl(20 94% 72%); background: hsl(18 88% 54% / .16); }
 .zone-list li.active.z-fear, .zone-list li.active.z-vix-mid { color: hsl(32 95% 70%); background: hsl(28 90% 55% / .16); }
 .zone-list li.active.z-neutral { color: hsl(220 25% 88%); background: hsl(220 15% 50% / .2); }
 .zone-list li.active.z-greed { color: hsl(150 70% 66%); background: hsl(150 60% 45% / .16); }
 .zone-list li.active.z-egreed, .zone-list li.active.z-vix-low { color: hsl(162 85% 66%); background: hsl(162 75% 42% / .18); }
+
+@media (min-width: 560px) {
+  #card-VIXTWN { grid-column: 1 / -1; }
+}
+@media (min-width: 760px) {
+  #card-VIXTWN .zone-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 12px;
+  }
+}
 
 .card-price { grid-area: price; min-width: 0; align-self: end; }
 .price { font-size: clamp(1.45rem, 7vw, 1.75rem); font-weight: 700; letter-spacing: -.015em; line-height: 1.1; }

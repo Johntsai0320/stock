@@ -15,7 +15,7 @@
   const LIVE_INTERVAL = 15_000;     // 每 15 秒嘗試抓取即時報價
 
   const ORDER = {
-    tw: ['TWII', 'TPEX', '2330', '0050'],
+    tw: ['TWII', 'TPEX', '2330', '0050', 'VIXTWN'],
     fut: ['TXF_D', 'TXF_N'],
     usidx: ['DJI', 'GSPC', 'IXIC', 'SOX', 'FGI', 'VIX'],
     us: ['TSM', 'VT', 'QQQM'],
@@ -25,6 +25,7 @@
     TPEX: { name: '台灣櫃買指數', symbol: 'TPEx', y: 'IX0043.TWO', tz: 'Asia/Taipei' },
     2330: { name: '台積電', symbol: '2330.TW', y: '2330.TW', tz: 'Asia/Taipei' },
     '0050': { name: '元大台灣50', symbol: '0050.TW', y: '0050.TW', tz: 'Asia/Taipei' },
+    VIXTWN: { name: '台股恐慌指數', symbol: 'VIXTWN · TAIWAN VIX', tz: 'Asia/Taipei' },
     TXF_D: { name: '台指期（日盤）', symbol: 'TXF', tz: 'Asia/Taipei' },
     TXF_N: { name: '台指期（夜盤）', symbol: 'TXF', tz: 'Asia/Taipei' },
     DJI: { name: '道瓊工業', symbol: '^DJI', y: '^DJI', tz: 'America/New_York' },
@@ -485,6 +486,15 @@
     return { idx: 2, label: '高度恐慌區間', short: '高度恐慌 (>30)', range: '超過 30 甚至 40 以上', cls: 'z-vix-high' };
   }
 
+  function getVixTwnZone(v) {
+    if (!isNum(v)) return null;
+    if (v < 15) return { idx: 0, label: '低波動偏樂觀（留意過熱自滿）', short: '偏樂觀・過熱警戒 (<15)', range: '低於 15（過熱／自滿留意）', cls: 'z-vix-low' };
+    if (v < 20) return { idx: 0, label: '市場情緒平穩偏樂觀', short: '情緒平穩 (15–20)', range: '低於 15～20', cls: 'z-vix-low' };
+    if (v < 30) return { idx: 1, label: '不確定性升高（波動放大）', short: '不確定性升高 (20–30)', range: '20～30', cls: 'z-vix-mid' };
+    if (v < 40) return { idx: 2, label: '恐慌情緒明顯升溫', short: '恐慌升溫 (30–40)', range: '30～40', cls: 'z-vix-elev' };
+    return { idx: 3, label: '極度／非理性恐慌', short: '極度恐慌 (≥40)', range: '40 以上', cls: 'z-vix-high' };
+  }
+
   function zoneLegendHTML(key, price) {
     if (key === 'FGI') {
       const z = getFgiZone(price);
@@ -518,6 +528,22 @@
         </ul>
       </div>`;
     }
+    if (key === 'VIXTWN') {
+      const z = getVixTwnZone(price);
+      const pct = isNum(price) ? Math.max(0, Math.min(100, ((price - 10) / 40) * 100)) : 20;
+      const items = [
+        [0, '低於 15～20：市場情緒平穩甚至偏樂觀，預期波動較小；低於 15 留意是否過熱或自滿。'],
+        [1, '20～30：市場不確定性升高，消息面干擾增加，波動開始放大。'],
+        [2, '30～40：恐慌情緒明顯升溫，通常伴隨大盤回檔或急跌，避險需求增加。'],
+        [3, '40 以上：市場進入極度或非理性恐慌，震盪幅度劇烈。'],
+      ];
+      return `<div class="zone-box">
+        <div class="zone-bar vixtwn-bar"><i class="zone-pin" style="left:${pct.toFixed(1)}%"></i></div>
+        <ul class="zone-list">
+          ${items.map(([i, txt]) => `<li class="${z && z.idx === i ? 'active ' + z.cls : ''}">• ${txt}</li>`).join('')}
+        </ul>
+      </div>`;
+    }
     return '';
   }
 
@@ -542,6 +568,9 @@
     } else if (key === 'VIX') {
       const vz = getVixZone(q.price);
       if (vz) badgeHTML = `<span class="badge zone-badge ${vz.cls}">${vz.short}</span>`;
+    } else if (key === 'VIXTWN') {
+      const vt = getVixTwnZone(q.price);
+      if (vt) badgeHTML = `<span class="badge zone-badge ${vt.cls}">${vt.short}</span>`;
     }
 
     const timeDisplay = isNum(q.time) && q.time > 0
@@ -1431,6 +1460,27 @@
         bbwStat,
         ['均線型態', diag?.pattern?.label || '—'],
       ];
+    } else if (key === 'VIXTWN') {
+      const vt = getVixTwnZone(q.price);
+      const sigma30d = isNum(q.price) ? (q.price / Math.sqrt(12)).toFixed(2) + '%' : '—';
+      stats = [
+        ['所屬區間', vt ? vt.label : '—'],
+        ['區間範圍', vt ? vt.range : '—'],
+        ['未來30天1σ波動', sigma30d],
+        ['編製指標', '期交所 TXO 年化%×100'],
+        ['開盤', fmt(q.open, d)],
+        ['最高', fmt(q.high, d)],
+        ['最低', fmt(q.low, d)],
+        ['昨收', fmt(q.prevClose, d)],
+        ['週線 (5MA)', diag?.mas?.ma5?.val ? fmt(diag.mas.ma5.val, d) : '—'],
+        ['雙週線 (10MA)', diag?.mas?.ma10?.val ? fmt(diag.mas.ma10.val, d) : '—'],
+        [state.range === '1d' ? '分時 MA20' : '月線 (20MA)', lastMA ? fmt(lastMA.value, d) : '—'],
+        ['季線 (60MA)', diag?.mas?.ma60?.val ? fmt(diag.mas.ma60.val, d) : '—'],
+        bbPctStat,
+        bbwStat,
+        ['均線型態', diag?.pattern?.label || '—'],
+        ['狀態', marketStatus(q).text],
+      ];
     } else {
       const volStat = isNum(q.turnoverYi) && (!isNum(q.volume) || q.volume <= 0)
         ? ['成交金額', `${fmt(q.turnoverYi, 1)} 億`]
@@ -1451,7 +1501,7 @@
       ];
     }
     $('#sheet-stats').innerHTML = stats.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('') +
-      (key === 'FGI' || key === 'VIX' ? `<div class="sheet-zone-wrap">${zoneLegendHTML(key, q.price)}</div>` : '');
+      (key === 'FGI' || key === 'VIX' || key === 'VIXTWN' ? `<div class="sheet-zone-wrap">${zoneLegendHTML(key, q.price)}</div>` : '');
   }
 
 
@@ -1781,7 +1831,7 @@
       };
     };
 
-    if (builtInKey && isBuiltIn2YOnly) {
+    if (builtInKey && (isBuiltIn2YOnly || builtInKey === 'VIXTWN')) {
       const localRes = fromBuiltIn();
       if (localRes) {
         btHistCache.set(cacheKey, localRes);

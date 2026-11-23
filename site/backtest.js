@@ -18,6 +18,7 @@
     { key: '0050', label: '0050 台灣50', fee: 'tw_etf' },
     { key: 'TWII', label: 'TWII 加權', fee: 'zero' },
     { key: 'TPEX', label: 'TPEX 櫃買', fee: 'zero' },
+    { key: 'VIXTWN', label: 'VIXTWN 台股恐慌', fee: 'zero' },
     { key: 'TSM', label: 'TSM ADR', fee: 'us' },
     { key: 'QQQM', label: 'QQQM', fee: 'us' },
     { key: 'VT', label: 'VT', fee: 'us' },

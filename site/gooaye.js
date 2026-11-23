@@ -1100,6 +1100,7 @@
     const sox = calcIndexMetrics(quotes.SOX);
     const fgi = quotes.FGI;
     const vix = quotes.VIX;
+    const vixTwn = quotes.VIXTWN;
     const { marginSignal, instSignal } = analyzeChips(quotes, tw);
 
     // 綜合位階判定
@@ -1111,6 +1112,18 @@
     const { zeusLost } = gState.regimeFlags;
     const fgiVal = fgi && typeof fgi.price === 'number' ? fgi.price : null;
     const vixVal = vix && typeof vix.price === 'number' ? vix.price : null;
+    const vixTwnVal = vixTwn && typeof vixTwn.price === 'number' ? vixTwn.price : null;
+    const vixTwnZone = vixTwnVal === null
+      ? ''
+      : vixTwnVal >= 40
+        ? '40以上・極度非理性恐慌'
+        : vixTwnVal >= 30
+          ? '30～40・恐慌升溫避險增'
+          : vixTwnVal >= 20
+            ? '20～30・波動開始放大'
+            : vixTwnVal < 15
+              ? '低於15・留意過熱自滿'
+              : '低於20・情緒平穩偏樂觀';
 
     if (zeusLost || (tw && tw.b60 !== null && tw.b60 < 0 && marginSticky)) {
       regimeLabel = '防禦減碼區（籌碼未淨／喪失宙斯）';
@@ -1147,6 +1160,9 @@
         : '';
       hints.push(`台股位階：52 週區間 <b>${tw.pct52.toFixed(0)}%</b>（${tw.stage}），距週線5MA <b>${fmtBias(tw.b5)}</b>、雙週線10MA <b>${fmtBias(tw.b10)}</b>、月線 <b>${fmtBias(tw.b20)}</b>、季線 <b>${fmtBias(tw.b60)}</b>、年線 <b>${fmtBias(tw.b240)}</b>${bbNote}。`);
     }
+    if (vixTwnVal !== null) {
+      hints.push(`台股恐慌指數 VIXTWN <b>${vixTwnVal.toFixed(2)}（${vixTwnZone}）</b>：衡量未來 30 天臺指選擇權預期年化波動。`);
+    }
     if (marginSignal.hint) hints.push(marginSignal.hint);
     if (instSignal.hint) hints.push(instSignal.hint);
     if (sox && sp) {
@@ -1159,7 +1175,7 @@
       } else if (fgiVal <= 25) {
         hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}（極度恐慌）</b>：啟動損害控制與分批試單邏輯（EP169、EP256）。`);
       } else {
-        hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}</b>${vixVal !== null ? ` · VIX <b>${vixVal.toFixed(2)}</b>` : ''}：情緒中性，回歸自由現金流與產業瓶頸選股（EP710）。`);
+        hints.push(`CNN 恐慌貪婪 <b>${fgiVal.toFixed(1)}</b>${vixVal !== null ? ` · 美股 VIX <b>${vixVal.toFixed(2)}</b>` : ''}：情緒中性，回歸自由現金流與產業瓶頸選股（EP710）。`);
       }
     }
     if (gState.regimeFlags.marginHigh) hints.push('手動檢核：<b>資金卡正二／質押水位高</b> — 籌碼尚未清洗乾淨，反彈易遇壓（EP473、EP710）。');

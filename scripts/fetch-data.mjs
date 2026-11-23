@@ -7,7 +7,7 @@ import { writeFile, readFile, mkdir } from 'node:fs/promises';
 const SCHEMA_VERSION = 3;
 const SITE_URL = process.env.SITE_URL || 'https://johntsai0320.github.io/stock/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
-const PRICE_INDEX_KEYS = new Set(['TWII', 'DJI', 'GSPC', 'IXIC', 'SOX', 'VIX']);
+const PRICE_INDEX_KEYS = new Set(['TWII', 'DJI', 'GSPC', 'IXIC', 'SOX', 'VIX', 'VIXTWN']);
 
 // key, Yahoo symbol, 顯示名稱, 分組, TWSE MIS 代碼
 export const SYMBOLS = [
@@ -350,6 +350,176 @@ async function fetchTaifex(marketType) {
       daily: [],
     },
     spot,
+  };
+}
+
+// ---------- 臺指選擇權波動率指數（TAIWAN VIX / VIXTWN）----------
+function vixDayTs(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return Date.UTC(y, m - 1, d, 5, 45, 0); // 13:45 Asia/Taipei 收盤揭示
+}
+
+async function fetchTaiwanVix(prevQuote = null) {
+  const byDate = new Map();
+  if (Array.isArray(prevQuote?.daily)) {
+    for (const r of prevQuote.daily) {
+      if (Array.isArray(r) && r.length >= 5 && Number.isFinite(r[0]) && Number.isFinite(r[4])) {
+        byDate.set(twDateStr(r[0]), [...r]);
+      }
+    }
+  }
+
+  // 1) 官方歷史日收盤（前 3 個月＋當月 YYYYMMnew.txt，累進合併保留長期資料）
+  let files = [];
+  try {
+    const res = await fetch('https://www.taifex.com.tw/cht/7/vixDaily3MNew', {
+      headers: { 'User-Agent': UA },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      files = [...new Set([...html.matchAll(/log2data\/(\d{6}new\.txt)/g)].map((m) => m[1]))];
+    }
+  } catch {}
+  if (!files.length) {
+    const nowTpe = new Date(Date.now() + 8 * 3600000);
+    for (let k = 0; k < 4; k++) {
+      const d = new Date(Date.UTC(nowTpe.getUTCFullYear(), nowTpe.getUTCMonth() - k, 1));
+      files.push(`${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}new.txt`);
+    }
+  }
+
+  const dailyResults = await Promise.allSettled(
+    files.map((f) =>
+      fetch(`https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data/${f}`, {
+        headers: { 'User-Agent': UA, Referer: 'https://www.taifex.com.tw/cht/7/vixDaily3MNew' },
+        signal: AbortSignal.timeout(10000),
+      }).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    )
+  );
+  for (const res of dailyResults) {
+    if (res.status !== 'fulfilled') continue;
+    for (const rawLine of res.value.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!/^\d{8}\b/.test(line)) continue;
+      const cols = line.split(/\s+/);
+      const rawDate = cols[0];
+      const closeVal = num(cols[2]) ?? num(cols[3]);
+      if (closeVal == null) continue;
+      const iso = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+      const c = +closeVal.toFixed(2);
+      const ex = byDate.get(iso);
+      if (ex && (ex[2] > ex[3] || ex[1] !== ex[4])) {
+        byDate.set(iso, [ex[0] || vixDayTs(iso), ex[1], +Math.max(ex[2], c).toFixed(2), +Math.min(ex[3], c).toFixed(2), c, 0]);
+      } else {
+        byDate.set(iso, [vixDayTs(iso), c, c, c, c, 0]);
+      }
+    }
+  }
+
+  // 2) 即時行情與盤中走勢（期交所 MIS getQuoteListVIX + getChartDataTick）
+  let misQuote = null;
+  let intraday = Array.isArray(prevQuote?.intraday) ? [...prevQuote.intraday] : [];
+  try {
+    const misHeaders = { 'Content-Type': 'application/json', Referer: 'https://mis.taifex.com.tw/futures/VolatilityQuotes/' };
+    const j = await fetchJSON('https://mis.taifex.com.tw/futures/api/getQuoteListVIX', {
+      method: 'POST',
+      headers: misHeaders,
+      body: JSON.stringify({ SortColumn: '', AscDesc: 'A' }),
+    }, 2);
+    const list = j?.RtData?.QuoteList || [];
+    misQuote = list.find((x) => x.SymbolID === 'TAIWANVIX') || list[0] || null;
+
+    if (misQuote?.SymbolID && /^\d{8}$/.test(String(misQuote.CDate || ''))) {
+      try {
+        const tj = await fetchJSON('https://mis.taifex.com.tw/futures/api/getChartDataTick', {
+          method: 'POST',
+          headers: misHeaders,
+          body: JSON.stringify({ SymbolID: misQuote.SymbolID }),
+        }, 2);
+        const byMin = new Map();
+        for (const row of tj?.RtData?.Ticks || []) {
+          const hhmmss = String(row?.[0] || '').trim();
+          const val = num(row?.[4]);
+          if (hhmmss.length < 6 || val == null) continue;
+          const ts = parseTaifexTs(misQuote.CDate, hhmmss, false);
+          if (ts != null) byMin.set(hhmmss.slice(0, 4), [ts, +val.toFixed(2)]);
+        }
+        if (byMin.size) intraday = [...byMin.values()].sort((a, b) => a[0] - b[0]);
+      } catch {}
+    }
+  } catch {}
+
+  const validRawDate = misQuote && /^\d{8}$/.test(String(misQuote.CDate || '')) ? misQuote.CDate : null;
+  const misPrice = misQuote ? num(misQuote.CLastPrice) : null;
+  const misRef = misQuote ? num(misQuote.CRefPrice) : null;
+  const misOpen = misQuote ? num(misQuote.COpenPrice) : null;
+  const misHigh = misQuote ? num(misQuote.CHighPrice) : null;
+  const misLow = misQuote ? num(misQuote.CLowPrice) : null;
+  const misTime = validRawDate ? parseTaifexTs(validRawDate, String(misQuote.CTime || '134500'), false) : null;
+
+  if (validRawDate && misPrice != null) {
+    const isoToday = `${validRawDate.slice(0, 4)}-${validRawDate.slice(4, 6)}-${validRawDate.slice(6, 8)}`;
+    const o = +(misOpen ?? misPrice).toFixed(2);
+    const c = +misPrice.toFixed(2);
+    const h = +Math.max(misHigh ?? c, o, c).toFixed(2);
+    const l = +Math.min(misLow ?? c, o, c).toFixed(2);
+    const ex = byDate.get(isoToday);
+    byDate.set(isoToday, [
+      vixDayTs(isoToday),
+      o,
+      ex ? +Math.max(ex[2], h).toFixed(2) : h,
+      ex ? +Math.min(ex[3], l).toFixed(2) : l,
+      c,
+      0,
+    ]);
+    if (misTime && (!intraday.length || intraday[intraday.length - 1][0] <= misTime)) {
+      const last = intraday[intraday.length - 1];
+      if (last && last[0] === misTime) last[1] = c;
+      else intraday.push([misTime, c]);
+    }
+  }
+
+  const daily = [...byDate.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-520)
+    .map(([, bar]) => bar);
+  if (!daily.length && misPrice == null) throw new Error('TAIFEX VIXTWN: no quote or daily rows');
+
+  const lastBar = daily[daily.length - 1] || null;
+  const prevBar = daily.length >= 2 ? daily[daily.length - 2] : null;
+  const price = misPrice ?? lastBar?.[4] ?? prevQuote?.price ?? null;
+  const prevClose = misRef ?? prevBar?.[4] ?? prevQuote?.prevClose ?? price;
+  const open = misOpen ?? lastBar?.[1] ?? price;
+  const high = misHigh ?? lastBar?.[2] ?? price;
+  const low = misLow ?? lastBar?.[3] ?? price;
+  const time = misTime ?? lastBar?.[0] ?? prevQuote?.time ?? Date.now();
+  const refRawDate = validRawDate || (time ? twDateStr(time).replace(/-/g, '') : null);
+  let session = null;
+  if (refRawDate && /^\d{8}$/.test(refRawDate)) {
+    const y = +refRawDate.slice(0, 4), m = +refRawDate.slice(4, 6), d = +refRawDate.slice(6, 8);
+    session = { start: Date.UTC(y, m - 1, d, 1, 0, 0), end: Date.UTC(y, m - 1, d, 5, 45, 0) };
+  }
+
+  return {
+    key: 'VIXTWN',
+    name: '台股恐慌指數',
+    symbol: 'VIXTWN · TAIWAN VIX',
+    group: 'tw',
+    currency: 'PTS',
+    price,
+    prevClose,
+    open,
+    high,
+    low,
+    volume: null,
+    time,
+    session,
+    tz: 'Asia/Taipei',
+    source: misQuote ? '期交所 VIX (MIS)' : '期交所 VIX',
+    stale: !misQuote && Boolean(prevQuote?.stale),
+    intraday: intraday.slice(-360),
+    daily,
   };
 }
 
@@ -890,6 +1060,16 @@ async function main() {
     errors.push(`CNN FGI: ${e.message}`);
     const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.FGI : null;
     if (old) quotes.FGI = { ...old, stale: true };
+  }
+
+  // 台股恐慌指數（臺指選擇權波動率指數 VIXTWN）
+  try {
+    const oldVixTwn = prev?.version === SCHEMA_VERSION ? prev.quotes?.VIXTWN : null;
+    quotes.VIXTWN = await fetchTaiwanVix(oldVixTwn);
+  } catch (e) {
+    errors.push(`TAIFEX VIXTWN: ${e.message}`);
+    const old = prev?.version === SCHEMA_VERSION ? prev.quotes?.VIXTWN : null;
+    if (old) quotes.VIXTWN = { ...old, stale: true };
   }
 
   // 證交所 MIS 覆寫（即時真實報價），優先於延遲的 Yahoo
