@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=18" />
+  <link rel="stylesheet" href="styles.css?v=19" />
   <script src="vendor/lightweight-charts.standalone.production.js" defer></script>
 </head>
 <body class="scheme-tw">
@@ -65,6 +65,11 @@
         <div id="hl-futoi-value" class="hl-value">—</div>
         <div id="hl-futoi-detail" class="hl-detail">載入中…</div>
       </article>
+      <article id="optoi-hl-card" class="hl-card hl-clickable" role="button" tabindex="0" data-chip-sheet="OPT_OI" aria-label="檢視台指選擇權三大法人未平倉多空淨額">
+        <div class="hl-label hl-label-row"><span>外資選擇權多空總數淨額</span><span class="hl-hint">未平倉表 ▸</span></div>
+        <div id="hl-optoi-value" class="hl-value">—</div>
+        <div id="hl-optoi-detail" class="hl-detail">載入中…</div>
+      </article>
     </section>
 
     <section class="group" aria-labelledby="g-tw">
@@ -73,7 +78,7 @@
     </section>
 
     <section class="group" aria-labelledby="g-twchip">
-      <h2 id="g-twchip" class="group-title">台股籌碼 <small>融資餘額・三大法人現貨・外資期貨淨口數</small></h2>
+      <h2 id="g-twchip" class="group-title">台股籌碼 <small>融資餘額・三大法人現貨・外資期貨淨口數・外資選擇權淨口數</small></h2>
       <div class="g-chip-grid" id="grid-twchip"></div>
     </section>
 
@@ -360,7 +365,7 @@
   </section>
 
   <script src="app.js?v=18" defer></script>
-  <script src="gooaye.js?v=9" defer></script>
+  <script src="gooaye.js?v=10" defer></script>
   <script src="backtest.js?v=3" defer></script>
 </body>
 </html>

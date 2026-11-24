@@ -93,7 +93,6 @@ button { font: inherit; color: inherit; }
   border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
   min-width: 0;
 }
-#futoi-hl-card { grid-column: 1 / -1; }
 #fx-card { cursor: pointer; }
 .hl-clickable {
   cursor: pointer;
@@ -575,8 +574,7 @@ button { font: inherit; color: inherit; }
 @media (min-width: 1024px) {
   .container, .topbar-inner { max-width: 1320px; }
   .group { margin-top: 28px; }
-  .highlight { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  #futoi-hl-card { grid-column: auto; }
+  .highlight { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .hl-value { font-size: clamp(1.25rem, 1.6vw, 1.65rem); }
   .card:hover { background: linear-gradient(165deg, hsl(225 12% 17%) 0%, var(--card) 60%); }
   .card:focus-visible, .hl-card:focus-visible, .tab:focus-visible, .icon-btn:focus-visible, .chip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -1042,9 +1040,24 @@ button { font: inherit; color: inherit; }
   .g-chip-grid { grid-template-columns: repeat(2, 1fr); }
   .g-chip-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
-@media (min-width: 960px) {
-  .g-chip-grid { grid-template-columns: repeat(3, 1fr); }
-  .g-chip-grid > :last-child:nth-child(odd) { grid-column: auto; }
+.chip-badge-cp {
+  display: inline-block;
+  font-size: .68rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-right: 5px;
+  letter-spacing: .02em;
+}
+.chip-badge-cp.is-call {
+  background: hsl(0 72% 58% / .16);
+  color: var(--up);
+  border: 1px solid hsl(0 72% 58% / .35);
+}
+.chip-badge-cp.is-put {
+  background: hsl(148 56% 45% / .16);
+  color: var(--down);
+  border: 1px solid hsl(148 56% 45% / .35);
 }
 .g-chip-card {
   background: linear-gradient(165deg, var(--card-hi) 0%, var(--card) 60%);

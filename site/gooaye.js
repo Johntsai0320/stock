@@ -360,12 +360,18 @@
       extLabel: '期交所原頁 ↗',
       extUrl: 'https://www.taifex.com.tw/cht/3/futContractsDate',
     },
+    OPT_OI: {
+      title: '台指選擇權三大法人未平倉多空淨額',
+      extLabel: '期交所原頁 ↗',
+      extUrl: 'https://www.taifex.com.tw/cht/3/callsAndPutsDate',
+    },
   };
 
   function analyzeChips(quotes, tw) {
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
     const futOi = quotes.FUT_OI;
+    const optOi = quotes.OPT_OI;
     const twiiQ = quotes.TWII;
     const twDayDown = twiiQ && typeof twiiQ.price === 'number' && typeof twiiQ.prevClose === 'number'
       ? twiiQ.price < twiiQ.prevClose
@@ -452,7 +458,25 @@
       }
     }
 
-    return { marginSignal, instSignal, futOiSignal };
+    let optOiSignal = { label: '尚無選擇權未平倉', cls: 'neutral', hint: '' };
+    if (optOi && typeof optOi.price === 'number') {
+      const net = optOi.price;
+      const chg = typeof optOi.chg === 'number' ? optOi.chg : (net - (optOi.prevClose ?? net));
+      const cpNote = typeof optOi.callNetOI === 'number' && typeof optOi.putNetOI === 'number'
+        ? `（買權淨 ${fmtContracts(optOi.callNetOI)} · 賣權淨 ${fmtContracts(optOi.putNetOI)}）`
+        : '';
+      if (net >= 10000) {
+        optOiSignal = { label: '選擇權偏多', cls: 'bull', hint: `外資台指選擇權多空總數淨額 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）${cpNote}。` };
+      } else if (net <= -10000) {
+        optOiSignal = { label: '選擇權偏空避險', cls: 'bear', hint: `外資台指選擇權多空總數淨額 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）${cpNote}。` };
+      } else if (net < 0) {
+        optOiSignal = { label: '選擇權淨空', cls: 'warn', hint: `外資台指選擇權多空總數淨額 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）${cpNote}。` };
+      } else {
+        optOiSignal = { label: '選擇權淨多', cls: 'neutral', hint: `外資台指選擇權多空總數淨額 <b>${fmtContracts(net)}</b>（單日 <b>${fmtContracts(chg)}</b>）${cpNote}。` };
+      }
+    }
+
+    return { marginSignal, instSignal, futOiSignal, optOiSignal };
   }
 
   function renderChipCards(selector, quotes) {
@@ -461,8 +485,9 @@
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
     const futOi = quotes.FUT_OI;
+    const optOi = quotes.OPT_OI;
     const tw = calcIndexMetrics(quotes.TWII);
-    const { marginSignal, instSignal, futOiSignal } = analyzeChips(quotes, tw);
+    const { marginSignal, instSignal, futOiSignal, optOiSignal } = analyzeChips(quotes, tw);
 
     const mHtml = margin && typeof margin.price === 'number' ? (() => {
       const chg = typeof margin.chg === 'number' ? margin.chg : (margin.price - (margin.prevClose ?? margin.price));
@@ -548,7 +573,41 @@
       </article>
     `;
 
-    wrap.innerHTML = mHtml + iHtml + fHtml;
+    const oHtml = optOi && typeof optOi.price === 'number' ? (() => {
+      const net = optOi.price;
+      const chg = typeof optOi.chg === 'number' ? optOi.chg : (net - (optOi.prevClose ?? net));
+      const netCls = net > 0 ? 'up' : net < 0 ? 'down' : '';
+      const chgCls = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+      const bullStr = optOi.bullOI != null ? optOi.bullOI.toLocaleString('en-US') : '—';
+      const bearStr = optOi.bearOI != null ? optOi.bearOI.toLocaleString('en-US') : '—';
+      const cpTxt = typeof optOi.callNetOI === 'number' && typeof optOi.putNetOI === 'number'
+        ? ` · 買權淨 ${fmtContracts(optOi.callNetOI)} / 賣權淨 ${fmtContracts(optOi.putNetOI)}`
+        : '';
+      return `
+        <article class="g-chip-card g-chip-clickable" role="button" tabindex="0" data-chip-sheet="OPT_OI" aria-label="檢視台指選擇權三大法人未平倉多空淨額">
+          <div class="g-reg-top">
+            <strong>外資選擇權多空總數淨額</strong>
+            <span class="badge badge-${optOiSignal.cls}">${esc(optOiSignal.label)}</span>
+          </div>
+          <div class="g-chip-main">
+            <div class="g-reg-price num ${netCls}">${fmtContracts(net)}</div>
+            <span class="g-chip-chg num ${chgCls}">單日 ${fmtContracts(chg)}</span>
+          </div>
+          <div class="g-chip-sub g-chip-sub-row">
+            <span>看多 ${bullStr} · 看空 ${bearStr} 口${cpTxt} · ${esc(optOi.source || '期交所')}${optOi.stale ? '（盤中沿用前日）' : ''}</span>
+            <span class="g-chip-hint">未平倉表 ▸</span>
+          </div>
+        </article>
+      `;
+    })() : `
+      <article class="g-chip-card g-chip-clickable" role="button" tabindex="0" data-chip-sheet="OPT_OI" aria-label="檢視台指選擇權三大法人未平倉多空淨額">
+        <div class="g-reg-top"><strong>外資選擇權多空總數淨額</strong><span class="badge">待盤後更新</span></div>
+        <div class="g-reg-price">—</div>
+        <div class="g-chip-sub g-chip-sub-row"><span>點擊檢視台指選擇權未平倉表</span><span class="g-chip-hint">未平倉表 ▸</span></div>
+      </article>
+    `;
+
+    wrap.innerHTML = mHtml + iHtml + fHtml + oHtml;
   }
 
   function renderChipHighlight(quotes) {
@@ -558,9 +617,12 @@
     const iDetEl = $('#hl-inst-detail');
     const fValEl = $('#hl-futoi-value');
     const fDetEl = $('#hl-futoi-detail');
+    const oValEl = $('#hl-optoi-value');
+    const oDetEl = $('#hl-optoi-detail');
     const margin = quotes.MARGIN;
     const inst = quotes.INST;
     const futOi = quotes.FUT_OI;
+    const optOi = quotes.OPT_OI;
 
     if (mValEl && mDetEl) {
       if (margin && typeof margin.price === 'number') {
@@ -604,6 +666,24 @@
         fValEl.textContent = '—';
         fValEl.className = 'hl-value';
         fDetEl.textContent = '待盤後公布';
+      }
+    }
+
+    if (oValEl && oDetEl) {
+      if (optOi && typeof optOi.price === 'number') {
+        const net = optOi.price;
+        const chg = typeof optOi.chg === 'number' ? optOi.chg : (net - (optOi.prevClose ?? net));
+        const netCls = net > 0 ? 'up' : net < 0 ? 'down' : '';
+        const chgCls = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+        oValEl.className = 'hl-value hl-value-split num';
+        oValEl.innerHTML = `<span class="${netCls}">${fmtContracts(net)}</span><span class="hl-sub-chg ${chgCls}">單日 ${fmtContracts(chg)}</span>`;
+        const bullStr = optOi.bullOI != null ? optOi.bullOI.toLocaleString('en-US') : '—';
+        const bearStr = optOi.bearOI != null ? optOi.bearOI.toLocaleString('en-US') : '—';
+        oDetEl.textContent = `看多 ${bullStr} · 看空 ${bearStr}${optOi.date ? ' · ' + fmtDateTW(optOi.date).slice(5) : ''}`;
+      } else {
+        oValEl.textContent = '—';
+        oValEl.className = 'hl-value';
+        oDetEl.textContent = '待盤後公布';
       }
     }
   }
@@ -1037,6 +1117,265 @@
     return kpiHtml + mainTableHtml + chartHtml + histHtml;
   }
 
+  function renderOptOiSheet(optOi) {
+    const subEl = $('#chip-sheet-sub');
+    if (!optOi || typeof optOi.price !== 'number') {
+      if (subEl) subEl.textContent = '臺灣期貨交易所（TAIFEX）· 選擇權買賣權分計（TXO）';
+      return '<p class="chip-empty">尚無台指選擇權三大法人未平倉資料（將於每日盤後自動同步）。</p>';
+    }
+
+    const history = Array.isArray(optOi.history) ? optOi.history : [];
+    const fallbackActive = {
+      date: optOi.date,
+      foreign: optOi.price,
+      foreignChg: optOi.chg,
+      bullOI: optOi.bullOI,
+      bearOI: optOi.bearOI,
+      callNetOI: optOi.callNetOI,
+      putNetOI: optOi.putNetOI,
+      foreignAmtYi: optOi.foreignAmtYi,
+      trust: optOi.trustNetOI,
+      trustChg: optOi.trustChg,
+      dealer: optOi.dealerNetOI,
+      dealerChg: optOi.dealerChg,
+      total: optOi.totalNetOI,
+      totalChg: optOi.totalChg,
+      rows: Array.isArray(optOi.rows) ? optOi.rows : [],
+    };
+    let active = gState.chipDate
+      ? history.find((h) => h.date === gState.chipDate)
+      : history.find((h) => h.date === optOi.date) || fallbackActive;
+    if (!active) active = fallbackActive;
+    if (active.date === optOi.date && Array.isArray(optOi.rows) && optOi.rows.length) {
+      active = { ...active, rows: optOi.rows };
+    }
+
+    const isLatest = !active.date || active.date === optOi.date;
+    const rocStr = fmtRocDateTW(active.date) || fmtDateTW(active.date);
+    if (subEl) {
+      subEl.textContent = `${rocStr} · 臺指選擇權（TXO） · ${optOi.source || '期交所'}${optOi.stale && isLatest ? '（盤中沿用前日）' : ''}${!isLatest ? '（歷史日明細）' : ''}`;
+    }
+
+    const fNet = typeof active.foreign === 'number' ? active.foreign : active.net;
+    const fChg = typeof active.foreignChg === 'number' ? active.foreignChg : active.chg;
+    const tNet = active.trust;
+    const tChg = active.trustChg;
+    const dNet = active.dealer;
+    const dChg = active.dealerChg;
+    const totNet = active.total;
+    const totChg = active.totalChg;
+
+    const kpiHtml = `
+      <div class="chip-kpi-grid">
+        <div class="chip-kpi is-primary">
+          <div class="chip-kpi-label">外資及陸資</div>
+          <div class="chip-kpi-val num ${clsSign(fNet)}">${fmtContracts(fNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(fChg)}">單日 ${fmtContracts(fChg)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">投信</div>
+          <div class="chip-kpi-val num ${clsSign(tNet)}">${fmtContracts(tNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(tChg)}">單日 ${fmtContracts(tChg)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">自營商</div>
+          <div class="chip-kpi-val num ${clsSign(dNet)}">${fmtContracts(dNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(dChg)}">單日 ${fmtContracts(dChg)}</div>
+        </div>
+        <div class="chip-kpi">
+          <div class="chip-kpi-label">三大法人合計</div>
+          <div class="chip-kpi-val num ${clsSign(totNet)}">${fmtContracts(totNet)}</div>
+          <div class="chip-kpi-sub num ${clsSign(totChg)}">單日 ${fmtContracts(totChg)}</div>
+        </div>
+      </div>
+    `;
+
+    const rows = Array.isArray(active.rows) && active.rows.length
+      ? active.rows
+      : [
+          ...(typeof dNet === 'number' ? [{ role: '自營商', bullOI: null, bearOI: null, netOI: dNet, chg: dChg ?? null, netAmtYi: null, callNetOI: null, putNetOI: null }] : []),
+          ...(typeof tNet === 'number' ? [{ role: '投信', bullOI: null, bearOI: null, netOI: tNet, chg: tChg ?? null, netAmtYi: null, callNetOI: null, putNetOI: null }] : []),
+          { role: '外資及陸資', bullOI: active.bullOI ?? null, bearOI: active.bearOI ?? null, netOI: fNet, chg: fChg ?? null, netAmtYi: active.foreignAmtYi ?? null, callNetOI: active.callNetOI ?? null, putNetOI: active.putNetOI ?? null },
+          ...(typeof totNet === 'number' ? [{ role: '合計', bullOI: null, bearOI: null, netOI: totNet, chg: totChg ?? null, netAmtYi: null, callNetOI: null, putNetOI: null }] : []),
+        ];
+
+    const summaryRowsHtml = rows.map((r) => {
+      const rCls = r.role === '合計'
+        ? 'is-total'
+        : r.role.includes('外資')
+          ? 'is-highlight'
+          : '';
+      return `
+        <tr class="${rCls}">
+          <td>${esc(r.role)}</td>
+          <td>${fmtInt(r.bullOI)}</td>
+          <td>${fmtInt(r.bearOI)}</td>
+          <td class="${clsSign(r.netOI)}">${fmtSignedInt(r.netOI)}</td>
+          <td class="${clsSign(r.chg)}">${fmtSignedInt(r.chg)}</td>
+          <td class="${clsSign(r.netAmtYi)}">${typeof r.netAmtYi === 'number' ? fmtYiSignedNum(r.netAmtYi) : '—'}</td>
+          <td class="${clsSign(r.callNetOI)}">${fmtSignedInt(r.callNetOI)}</td>
+          <td class="${clsSign(r.putNetOI)}">${fmtSignedInt(r.putNetOI)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    const mainTableHtml = `
+      <div class="chip-sec-bar">
+        <div class="chip-sec-title">臺指選擇權（TXO）三大法人未平倉多空淨額 <small>${esc(rocStr)}</small></div>
+        <div class="chip-sec-controls">
+          ${!isLatest ? '<button type="button" class="chip-back-btn" data-chip-latest="1">回到最新</button>' : ''}
+        </div>
+      </div>
+      <div class="chip-table-wrap">
+        <table class="chip-table">
+          <thead>
+            <tr>
+              <th>身份別</th>
+              <th>看多未平倉</th>
+              <th>看空未平倉</th>
+              <th>多空總數淨額</th>
+              <th>單日增減</th>
+              <th>淨額金額（億）</th>
+              <th>買權淨額</th>
+              <th>賣權淨額</th>
+            </tr>
+          </thead>
+          <tbody>${summaryRowsHtml}</tbody>
+        </table>
+      </div>
+      <p class="chip-note">註：看多口數 = 買進買權（Call 買方）+ 賣出賣權（Put 賣方）；看空口數 = 賣出買權（Call 賣方）+ 買進賣權（Put 買方）；多空總數淨額 = 看多 − 看空 = 買權淨額 − 賣權淨額。</p>
+    `;
+
+    const hasCpDetail = rows.some((r) => typeof r.callLongOI === 'number' || typeof r.putLongOI === 'number');
+    let cpTableHtml = '';
+    if (hasCpDetail) {
+      const renderCpGroup = (kindLabel, badgeCls, prefix) => rows.map((r) => {
+        const rCls = r.role === '合計'
+          ? 'is-total'
+          : r.role.includes('外資')
+            ? 'is-highlight'
+            : '';
+        const longV = r[`${prefix}LongOI`];
+        const shortV = r[`${prefix}ShortOI`];
+        const netV = r[`${prefix}NetOI`];
+        const chgV = r[`${prefix}Chg`];
+        const amtV = r[`${prefix}NetAmtYi`];
+        const trdV = r[`${prefix}TradeNet`];
+        return `
+          <tr class="${rCls}">
+            <td><span class="chip-badge-cp ${badgeCls}">${kindLabel}</span>${esc(r.role)}</td>
+            <td>${fmtInt(longV)}</td>
+            <td>${fmtInt(shortV)}</td>
+            <td class="${clsSign(netV)}">${fmtSignedInt(netV)}</td>
+            <td class="${clsSign(chgV)}">${fmtSignedInt(chgV)}</td>
+            <td class="${clsSign(amtV)}">${typeof amtV === 'number' ? fmtYiSignedNum(amtV) : '—'}</td>
+            <td class="${clsSign(trdV)}">${fmtSignedInt(trdV)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      cpTableHtml = `
+        <div class="chip-sec-bar">
+          <div class="chip-sec-title">買權（CALL）／賣權（PUT）分計未平倉明細 <small>對照期交所 callsAndPutsDate</small></div>
+        </div>
+        <div class="chip-table-wrap">
+          <table class="chip-table">
+            <thead>
+              <tr>
+                <th>買賣權 / 身份別</th>
+                <th>買方未平倉</th>
+                <th>賣方未平倉</th>
+                <th>買賣差額（口）</th>
+                <th>單日增減</th>
+                <th>契約金額（億）</th>
+                <th>當日交易淨額</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${renderCpGroup('買權', 'is-call', 'call')}
+              ${renderCpGroup('賣權', 'is-put', 'put')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    const chartHtml = renderBarChartSvg(
+      history.map((h) => ({ date: h.date, val: typeof h.foreign === 'number' ? h.foreign : h.net })),
+      {
+        title: `近 ${history.length} 交易日 外資台指選擇權多空總數淨額（口）`,
+        activeDate: active.date,
+        formatVal: fmtContracts,
+      }
+    );
+
+    let histHtml = '';
+    if (history.length) {
+      const fVal = (h) => (typeof h.foreign === 'number' ? h.foreign : h.net);
+      const latestVal = fVal(history[history.length - 1]);
+      const chg5 = history.length >= 6 && typeof latestVal === 'number' && typeof fVal(history[history.length - 6]) === 'number'
+        ? latestVal - fVal(history[history.length - 6])
+        : null;
+      const chg20 = history.length >= 21 && typeof latestVal === 'number' && typeof fVal(history[history.length - 21]) === 'number'
+        ? latestVal - fVal(history[history.length - 21])
+        : null;
+      const sumPills = [
+        chg5 !== null ? `<span class="chip-sum-pill num">外資近5日<b class="${clsSign(chg5)}">${fmtContracts(chg5)}</b></span>` : '',
+        chg20 !== null ? `<span class="chip-sum-pill num">近20日<b class="${clsSign(chg20)}">${fmtContracts(chg20)}</b></span>` : '',
+      ].filter(Boolean).join('');
+
+      const fmtCellWithChg = (val, chg) => {
+        if (typeof val !== 'number') return '—';
+        const chgHtml = typeof chg === 'number'
+          ? `<span class="chip-cell-chg ${clsSign(chg)}">(${fmtSignedInt(chg)})</span>`
+          : '';
+        return `<span class="${clsSign(val)}">${fmtSignedInt(val)}</span>${chgHtml}`;
+      };
+
+      const histRows = [...history].reverse().map((h) => {
+        const fv = fVal(h);
+        const fc = typeof h.foreignChg === 'number' ? h.foreignChg : h.chg;
+        const cpHtml = typeof h.callNetOI === 'number' && typeof h.putNetOI === 'number'
+          ? `<span class="${clsSign(h.callNetOI)}">${fmtSignedInt(h.callNetOI)}</span> / <span class="${clsSign(h.putNetOI)}">${fmtSignedInt(h.putNetOI)}</span>`
+          : '—';
+        return `
+          <tr data-chip-date="${esc(h.date)}" class="${h.date === active.date ? 'is-selected' : ''}">
+            <td>${esc(fmtDateTW(h.date))}</td>
+            <td>${fmtCellWithChg(fv, fc)}</td>
+            <td>${cpHtml}</td>
+            <td>${fmtCellWithChg(h.trust, h.trustChg)}</td>
+            <td>${fmtCellWithChg(h.dealer, h.dealerChg)}</td>
+            <td class="${clsSign(h.total)}">${fmtSignedInt(h.total)}</td>
+          </tr>
+        `;
+      }).join('');
+
+      histHtml = `
+        <div class="chip-sec-bar">
+          <div class="chip-sec-title">近 ${history.length} 交易日未平倉多空淨額變化 <small>單位：口（括號為單日增減）</small></div>
+          ${sumPills ? `<div class="chip-sum-pills">${sumPills}</div>` : ''}
+        </div>
+        <div class="chip-table-wrap chip-table-hist-wrap">
+          <table class="chip-table chip-table-hist">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>外資淨額（日增減）</th>
+                <th>買權淨 / 賣權淨</th>
+                <th>投信淨額（日增減）</th>
+                <th>自營商（日增減）</th>
+                <th>三大合計</th>
+              </tr>
+            </thead>
+            <tbody>${histRows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    return kpiHtml + mainTableHtml + cpTableHtml + chartHtml + histHtml;
+  }
+
   function renderChipSheet(quotes) {
     const kind = gState.chipSheet;
     if (!kind || !CHIP_META[kind]) return;
@@ -1053,7 +1392,9 @@
     const q = quotes || window.__STOCKDASH_QUOTES__ || {};
     bodyEl.innerHTML = kind === 'INST'
       ? renderInstSheet(q.INST)
-      : renderFutOiSheet(q.FUT_OI);
+      : kind === 'OPT_OI'
+        ? renderOptOiSheet(q.OPT_OI)
+        : renderFutOiSheet(q.FUT_OI);
   }
 
   function openChipSheet(kind) {
@@ -1101,7 +1442,7 @@
     const fgi = quotes.FGI;
     const vix = quotes.VIX;
     const vixTwn = quotes.VIXTWN;
-    const { marginSignal, instSignal } = analyzeChips(quotes, tw);
+    const { marginSignal, instSignal, futOiSignal, optOiSignal } = analyzeChips(quotes, tw);
 
     // 綜合位階判定
     let regimeLabel = '中性震盪觀察';
@@ -1165,6 +1506,8 @@
     }
     if (marginSignal.hint) hints.push(marginSignal.hint);
     if (instSignal.hint) hints.push(instSignal.hint);
+    if (futOiSignal.hint) hints.push(futOiSignal.hint);
+    if (optOiSignal.hint) hints.push(optOiSignal.hint);
     if (sox && sp) {
       const diff = (sox.b60 ?? 0) - (sp.b60 ?? 0);
       hints.push(`領頭羊強弱：費半季線乖離 <b>${fmtBias(sox.b60)}</b> vs S&P 500 <b>${fmtBias(sp.b60)}</b>（半導體相對${diff >= 0 ? '偏強領漲' : '轉弱須留意'}）。`);
