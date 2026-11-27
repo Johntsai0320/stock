@@ -32,6 +32,11 @@ const num = (v) => {
   const n = Number(String(v).replace(/,/g, ''));
   return Number.isFinite(n) ? n : null;
 };
+const posNum = (v) => {
+  const n = num(v);
+  return n != null && n > 0 ? n : null;
+};
+const validVix = (v) => v != null && Number.isFinite(v) && v > 0 && Math.abs(v) < 9000;
 
 function dateInTz(ms, tz = 'UTC') {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
@@ -167,14 +172,14 @@ async function fetchYahoo(def) {
 
 // ---------- TWSE MIS（海外 IP 可能被擋或偶發 503，重試 2 次，失敗改以期交所/盤後官方報價補強）----------
 function extractTwsePrice(it) {
-  const z = num(it.z);
+  const z = posNum(it.z);
   if (z != null) return z;
-  const tz = num(it.trade?.z);
+  const tz = posNum(it.trade?.z);
   if (tz != null) return tz;
-  const pz = num(it.pz);
+  const pz = posNum(it.pz);
   if (pz != null) return pz;
-  const b1 = num(it.b?.split('_')?.[0]);
-  const a1 = num(it.a?.split('_')?.[0]);
+  const b1 = posNum(it.b?.split('_')?.[0]);
+  const a1 = posNum(it.a?.split('_')?.[0]);
   if (b1 != null && a1 != null) return (b1 + a1) / 2;
   return b1 ?? a1 ?? null;
 }
@@ -193,10 +198,10 @@ async function fetchTwseMis() {
     const volume = (key === '2330' || key === '0050') && rawVol != null ? rawVol * 1000 : rawVol;
     out[key] = {
       price,
-      prevClose: num(it.y),
-      open: num(it.o),
-      high: num(it.h),
-      low: num(it.l),
+      prevClose: posNum(it.y),
+      open: posNum(it.o),
+      high: posNum(it.h),
+      low: posNum(it.l),
       volume,
       time: num(it.tlong) || Date.now(),
     };
@@ -304,23 +309,28 @@ async function fetchTaifex(marketType) {
   const q = list.find((x) => /^TXF[A-Z]\d-[FM]$/.test(x.SymbolID));
   if (!q) throw new Error('TAIFEX: near-month contract not found');
   const night = marketType === 1;
-  const ref = num(q.CRefPrice); // 日盤 = 昨日結算價；夜盤 = 當日日盤結算價（期交所提供）
-  const last = num(q.CLastPrice);
+  const cleanTaifex = (v) => {
+    const n = posNum(v);
+    return n != null && n < 900000 ? n : null;
+  };
+  const ref = cleanTaifex(q.CRefPrice); // 日盤 = 昨日結算價；夜盤 = 當日日盤結算價（期交所提供）
+  const last = cleanTaifex(q.CLastPrice);
   const d = q.CDate; // 交易時段起始日
   const time = parseTaifexTs(d, q.CTime, night);
 
   let spot = null;
   if (!night) {
     const sr = list.find((x) => x.SymbolID === 'TXF-S');
-    if (sr && num(sr.CLastPrice) != null && /^\d{8}$/.test(String(sr.CDate || ''))) {
+    const spotPrice = sr ? cleanTaifex(sr.CLastPrice) : null;
+    if (sr && spotPrice != null && /^\d{8}$/.test(String(sr.CDate || ''))) {
       const sd = sr.CDate;
       spot = {
         date: `${sd.slice(0, 4)}-${sd.slice(4, 6)}-${sd.slice(6, 8)}`,
-        price: num(sr.CLastPrice),
-        prevClose: num(sr.CRefPrice),
-        open: num(sr.COpenPrice),
-        high: num(sr.CHighPrice),
-        low: num(sr.CLowPrice),
+        price: spotPrice,
+        prevClose: cleanTaifex(sr.CRefPrice),
+        open: cleanTaifex(sr.COpenPrice),
+        high: cleanTaifex(sr.CHighPrice),
+        low: cleanTaifex(sr.CLowPrice),
         time: parseTaifexTs(sd, sr.CTime, false) || Date.now(),
       };
     }
@@ -336,13 +346,13 @@ async function fetchTaifex(marketType) {
       currency: 'TWD',
       price: last,
       prevClose: ref,
-      open: num(q.COpenPrice),
-      high: num(q.CHighPrice),
-      low: num(q.CLowPrice),
+      open: last != null ? cleanTaifex(q.COpenPrice) : null,
+      high: last != null ? cleanTaifex(q.CHighPrice) : null,
+      low: last != null ? cleanTaifex(q.CLowPrice) : null,
       volume: num(q.CTotalVolume),
-      bid: num(q.CBidPrice1),
-      ask: num(q.CAskPrice1),
-      settlement: num(q.SettlementPrice),
+      bid: cleanTaifex(q.CBidPrice1),
+      ask: cleanTaifex(q.CAskPrice1),
+      settlement: cleanTaifex(q.SettlementPrice),
       sessionDate: d,
       time,
       source: '期交所 MIS',
@@ -363,9 +373,12 @@ async function fetchTaiwanVix(prevQuote = null) {
   const byDate = new Map();
   if (Array.isArray(prevQuote?.daily)) {
     for (const r of prevQuote.daily) {
-      if (Array.isArray(r) && r.length >= 5 && Number.isFinite(r[0]) && Number.isFinite(r[4])) {
-        byDate.set(twDateStr(r[0]), [...r]);
-      }
+      if (!Array.isArray(r) || r.length < 5 || !Number.isFinite(r[0]) || !validVix(r[4])) continue;
+      const c = +r[4].toFixed(2);
+      const o = validVix(r[1]) ? +r[1].toFixed(2) : c;
+      const hCandidates = [validVix(r[2]) ? +r[2].toFixed(2) : null, o, c].filter((x) => x != null);
+      const lCandidates = [validVix(r[3]) ? +r[3].toFixed(2) : null, o, c].filter((x) => x != null);
+      byDate.set(twDateStr(r[0]), [r[0], o, +Math.max(...hCandidates).toFixed(2), +Math.min(...lCandidates).toFixed(2), c, 0]);
     }
   }
 
@@ -405,12 +418,14 @@ async function fetchTaiwanVix(prevQuote = null) {
       const cols = line.split(/\s+/);
       const rawDate = cols[0];
       const closeVal = num(cols[2]) ?? num(cols[3]);
-      if (closeVal == null) continue;
+      if (!validVix(closeVal)) continue;
       const iso = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
       const c = +closeVal.toFixed(2);
       const ex = byDate.get(iso);
       if (ex && (ex[2] > ex[3] || ex[1] !== ex[4])) {
-        byDate.set(iso, [ex[0] || vixDayTs(iso), ex[1], +Math.max(ex[2], c).toFixed(2), +Math.min(ex[3], c).toFixed(2), c, 0]);
+        const h = validVix(ex[2]) ? +Math.max(ex[2], c).toFixed(2) : +Math.max(ex[1], c).toFixed(2);
+        const l = validVix(ex[3]) ? +Math.min(ex[3], c).toFixed(2) : +Math.min(ex[1], c).toFixed(2);
+        byDate.set(iso, [ex[0] || vixDayTs(iso), ex[1], h, l, c, 0]);
       } else {
         byDate.set(iso, [vixDayTs(iso), c, c, c, c, 0]);
       }
@@ -419,7 +434,14 @@ async function fetchTaiwanVix(prevQuote = null) {
 
   // 2) 即時行情與盤中走勢（期交所 MIS getQuoteListVIX + getChartDataTick）
   let misQuote = null;
-  let intraday = Array.isArray(prevQuote?.intraday) ? [...prevQuote.intraday] : [];
+  let intraday = Array.isArray(prevQuote?.intraday)
+    ? prevQuote.intraday.filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && validVix(p[1]))
+    : [];
+  if (intraday.length) {
+    const latestIntraDate = twDateStr(intraday[intraday.length - 1][0]);
+    intraday = intraday.filter((p) => twDateStr(p[0]) === latestIntraDate);
+  }
+  let tickByMin = null;
   try {
     const misHeaders = { 'Content-Type': 'application/json', Referer: 'https://mis.taifex.com.tw/futures/VolatilityQuotes/' };
     const j = await fetchJSON('https://mis.taifex.com.tw/futures/api/getQuoteListVIX', {
@@ -441,22 +463,30 @@ async function fetchTaiwanVix(prevQuote = null) {
         for (const row of tj?.RtData?.Ticks || []) {
           const hhmmss = String(row?.[0] || '').trim();
           const val = num(row?.[4]);
-          if (hhmmss.length < 6 || val == null) continue;
+          if (hhmmss.length < 6 || !validVix(val)) continue;
           const ts = parseTaifexTs(misQuote.CDate, hhmmss, false);
           if (ts != null) byMin.set(hhmmss.slice(0, 4), [ts, +val.toFixed(2)]);
         }
-        if (byMin.size) intraday = [...byMin.values()].sort((a, b) => a[0] - b[0]);
+        if (byMin.size) tickByMin = byMin;
       } catch {}
     }
   } catch {}
 
+  // 未開盤時 MIS 會回傳 CLastPrice=0、CHighPrice=-99999、CLowPrice=99999，須視為無效並沿用前一交易日資料
   const validRawDate = misQuote && /^\d{8}$/.test(String(misQuote.CDate || '')) ? misQuote.CDate : null;
-  const misPrice = misQuote ? num(misQuote.CLastPrice) : null;
-  const misRef = misQuote ? num(misQuote.CRefPrice) : null;
-  const misOpen = misQuote ? num(misQuote.COpenPrice) : null;
-  const misHigh = misQuote ? num(misQuote.CHighPrice) : null;
-  const misLow = misQuote ? num(misQuote.CLowPrice) : null;
-  const misTime = validRawDate ? parseTaifexTs(validRawDate, String(misQuote.CTime || '134500'), false) : null;
+  const rawMisPrice = misQuote ? num(misQuote.CLastPrice) : null;
+  const misPrice = validVix(rawMisPrice) ? rawMisPrice : null;
+  const rawMisRef = misQuote ? num(misQuote.CRefPrice) : null;
+  const misRef = validVix(rawMisRef) ? rawMisRef : null;
+  const rawMisOpen = misQuote ? num(misQuote.COpenPrice) : null;
+  const misOpen = validVix(rawMisOpen) ? rawMisOpen : null;
+  const rawMisHigh = misQuote ? num(misQuote.CHighPrice) : null;
+  const misHigh = validVix(rawMisHigh) ? rawMisHigh : null;
+  const rawMisLow = misQuote ? num(misQuote.CLowPrice) : null;
+  const misLow = validVix(rawMisLow) ? rawMisLow : null;
+  const misTime = validRawDate && misPrice != null
+    ? parseTaifexTs(validRawDate, String(misQuote.CTime || '134500'), false)
+    : null;
 
   if (validRawDate && misPrice != null) {
     const isoToday = `${validRawDate.slice(0, 4)}-${validRawDate.slice(4, 6)}-${validRawDate.slice(6, 8)}`;
@@ -468,11 +498,16 @@ async function fetchTaiwanVix(prevQuote = null) {
     byDate.set(isoToday, [
       vixDayTs(isoToday),
       o,
-      ex ? +Math.max(ex[2], h).toFixed(2) : h,
-      ex ? +Math.min(ex[3], l).toFixed(2) : l,
+      ex && validVix(ex[2]) ? +Math.max(ex[2], h).toFixed(2) : h,
+      ex && validVix(ex[3]) ? +Math.min(ex[3], l).toFixed(2) : l,
       c,
       0,
     ]);
+    if (tickByMin && tickByMin.size) {
+      intraday = [...tickByMin.values()].sort((a, b) => a[0] - b[0]);
+    } else {
+      intraday = intraday.filter((p) => twDateStr(p[0]) === isoToday);
+    }
     if (misTime && (!intraday.length || intraday[intraday.length - 1][0] <= misTime)) {
       const last = intraday[intraday.length - 1];
       if (last && last[0] === misTime) last[1] = c;
@@ -488,12 +523,27 @@ async function fetchTaiwanVix(prevQuote = null) {
 
   const lastBar = daily[daily.length - 1] || null;
   const prevBar = daily.length >= 2 ? daily[daily.length - 2] : null;
-  const price = misPrice ?? lastBar?.[4] ?? prevQuote?.price ?? null;
-  const prevClose = misRef ?? prevBar?.[4] ?? prevQuote?.prevClose ?? price;
-  const open = misOpen ?? lastBar?.[1] ?? price;
-  const high = misHigh ?? lastBar?.[2] ?? price;
-  const low = misLow ?? lastBar?.[3] ?? price;
-  const time = misTime ?? lastBar?.[0] ?? prevQuote?.time ?? Date.now();
+  const hasLiveMis = misPrice != null;
+  const prevQuoteValid = validVix(prevQuote?.price);
+
+  const price = hasLiveMis ? misPrice : (lastBar?.[4] ?? (prevQuoteValid ? prevQuote.price : null));
+  const prevClose = hasLiveMis
+    ? (misRef ?? prevBar?.[4] ?? (validVix(prevQuote?.prevClose) ? prevQuote.prevClose : null) ?? price)
+    : (prevBar?.[4] ?? (validVix(prevQuote?.prevClose) ? prevQuote.prevClose : null) ?? price);
+  const open = hasLiveMis
+    ? (misOpen ?? lastBar?.[1] ?? price)
+    : (lastBar?.[1] ?? (validVix(prevQuote?.open) ? prevQuote.open : null) ?? price);
+  const high = hasLiveMis
+    ? (misHigh ?? lastBar?.[2] ?? price)
+    : (lastBar?.[2] ?? (validVix(prevQuote?.high) ? prevQuote.high : null) ?? price);
+  const low = hasLiveMis
+    ? (misLow ?? lastBar?.[3] ?? price)
+    : (lastBar?.[3] ?? (validVix(prevQuote?.low) ? prevQuote.low : null) ?? price);
+  const time = hasLiveMis
+    ? (misTime ?? lastBar?.[0] ?? prevQuote?.time ?? Date.now())
+    : ((prevQuoteValid && prevQuote?.time && lastBar && twDateStr(prevQuote.time) === twDateStr(lastBar[0]))
+        ? prevQuote.time
+        : (lastBar?.[0] ?? (prevQuoteValid ? prevQuote?.time : null) ?? Date.now()));
   const refRawDate = validRawDate || (time ? twDateStr(time).replace(/-/g, '') : null);
   let session = null;
   if (refRawDate && /^\d{8}$/.test(refRawDate)) {
@@ -516,7 +566,7 @@ async function fetchTaiwanVix(prevQuote = null) {
     time,
     session,
     tz: 'Asia/Taipei',
-    source: misQuote ? '期交所 VIX (MIS)' : '期交所 VIX',
+    source: hasLiveMis ? '期交所 VIX (MIS)' : '期交所 VIX',
     stale: !misQuote && Boolean(prevQuote?.stale),
     intraday: intraday.slice(-360),
     daily,
@@ -1355,8 +1405,8 @@ async function main() {
     for (const [k, v] of Object.entries(mis)) {
       const q = quotes[k];
       if (!q) continue;
-      if (v.prevClose != null) q.prevClose = v.prevClose;
-      if (v.price != null) {
+      if (v.price != null && v.price > 0) {
+        if (v.prevClose != null) q.prevClose = v.prevClose;
         const vDate = v.time ? twDateStr(v.time) : null;
         const qDate = q.time ? twDateStr(q.time) : null;
         const sameDay = !vDate || !qDate || vDate === qDate;

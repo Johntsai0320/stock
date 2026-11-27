@@ -93,6 +93,74 @@
     const n = Number(String(v).replace(/,/g, ''));
     return Number.isFinite(n) ? n : null;
   };
+  const posNum = (v) => {
+    const n = num(v);
+    return isNum(n) && n > 0 ? n : null;
+  };
+  const validVixTwn = (v) => isNum(v) && v > 0 && Math.abs(v) < 9000;
+  function sanitizeVixDaily(daily) {
+    if (!Array.isArray(daily)) return [];
+    const out = [];
+    for (const r of daily) {
+      if (!Array.isArray(r) || r.length < 5 || !isNum(r[0]) || !validVixTwn(r[4])) continue;
+      const c = round(r[4], 2);
+      const o = validVixTwn(r[1]) ? round(r[1], 2) : c;
+      const h = Math.max(...[validVixTwn(r[2]) ? round(r[2], 2) : null, o, c].filter(isNum));
+      const l = Math.min(...[validVixTwn(r[3]) ? round(r[3], 2) : null, o, c].filter(isNum));
+      out.push([r[0], o, h, l, c, r[5] ?? 0]);
+    }
+    return out;
+  }
+  function sanitizeQuote(q) {
+    if (!q || typeof q !== 'object' || !q.key) return null;
+    if (q.key === 'VIXTWN') {
+      const daily = sanitizeVixDaily(q.daily);
+      let intraday = Array.isArray(q.intraday)
+        ? q.intraday.filter((p) => Array.isArray(p) && isNum(p[0]) && validVixTwn(p[1]))
+        : [];
+      if (intraday.length) {
+        const latestDate = tzParts(intraday[intraday.length - 1][0], 'Asia/Taipei').date;
+        intraday = intraday.filter((p) => tzParts(p[0], 'Asia/Taipei').date === latestDate);
+      }
+      const lastBar = daily[daily.length - 1] || null;
+      const prevBar = daily.length >= 2 ? daily[daily.length - 2] : null;
+      if (!validVixTwn(q.price)) {
+        if (!lastBar) return null;
+        const price = lastBar[4];
+        return {
+          ...q,
+          price,
+          prevClose: prevBar ? prevBar[4] : price,
+          open: lastBar[1],
+          high: lastBar[2],
+          low: lastBar[3],
+          time: lastBar[0],
+          intraday,
+          daily,
+        };
+      }
+      const fallback = lastBar || [q.time || 0, q.price, q.price, q.price, q.price];
+      return {
+        ...q,
+        prevClose: validVixTwn(q.prevClose) ? q.prevClose : (prevBar ? prevBar[4] : q.price),
+        open: validVixTwn(q.open) ? q.open : fallback[1],
+        high: validVixTwn(q.high) ? q.high : fallback[2],
+        low: validVixTwn(q.low) ? q.low : fallback[3],
+        intraday,
+        daily,
+      };
+    }
+    if (q.group !== 'twchip') {
+      if (q.group === 'fut') {
+        if (isNum(q.price) && q.price <= 0) {
+          return { ...q, price: null, open: null, high: null, low: null };
+        }
+      } else if (q.price != null && (!isNum(q.price) || q.price <= 0)) {
+        return null;
+      }
+    }
+    return q;
+  }
   const decimalsFor = (key) => (key === 'USDTWD' ? 3 : key === 'FGI' ? 1 : key.startsWith('TXF') ? 0 : 2);
 
   const fmt = (v, d = 2) => (isNum(v) ? v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '—');
@@ -184,8 +252,12 @@
         localStorage.removeItem(CACHE_KEY);
         return null;
       }
-      // 結構檢查：缺基準價的項目一律捨棄，避免以錯誤基準計算漲跌
-      for (const [k, q] of Object.entries(c.quotes)) if (!isNum(q.prevClose) || !isNum(q.price)) delete c.quotes[k];
+      // 結構檢查：缺基準價或含異常 0 值的項目一律淨化或捨棄，避免顯示 0 或錯誤漲跌
+      for (const [k, q] of Object.entries(c.quotes)) {
+        const clean = sanitizeQuote(q);
+        if (!clean || !isNum(clean.prevClose) || !isNum(clean.price)) delete c.quotes[k];
+        else c.quotes[k] = clean;
+      }
       return c;
     } catch {
       localStorage.removeItem(CACHE_KEY);
@@ -207,7 +279,8 @@
   const PRICE_INDEX_KEYS = new Set(['TWII', 'DJI', 'GSPC', 'IXIC', 'SOX', 'VIX']);
 
   /** 新資料較新（或同時間）才覆寫；同日絕不讓 Yahoo 覆蓋證交所/櫃買/期交所權威報價 */
-  function mergeQuote(nq, { fromCache = false } = {}) {
+  function mergeQuote(rawNq, { fromCache = false } = {}) {
+    const nq = sanitizeQuote(rawNq);
     if (!nq || !nq.key) return false;
     const old = state.quotes[nq.key];
     if (!old) {
@@ -341,16 +414,16 @@
 
 
   function extractTwsePrice(it) {
-    const z = num(it.z);
-    if (isNum(z)) return z;
-    const tz = num(it.trade?.z);
-    if (isNum(tz)) return tz;
-    const pz = num(it.pz);
-    if (isNum(pz)) return pz;
-    const b1 = num(it.b?.split('_')?.[0]);
-    const a1 = num(it.a?.split('_')?.[0]);
-    if (isNum(b1) && isNum(a1)) return (b1 + a1) / 2;
-    return isNum(b1) ? b1 : isNum(a1) ? a1 : null;
+    const z = posNum(it.z);
+    if (z != null) return z;
+    const tz = posNum(it.trade?.z);
+    if (tz != null) return tz;
+    const pz = posNum(it.pz);
+    if (pz != null) return pz;
+    const b1 = posNum(it.b?.split('_')?.[0]);
+    const a1 = posNum(it.a?.split('_')?.[0]);
+    if (b1 != null && a1 != null) return (b1 + a1) / 2;
+    return b1 ?? a1 ?? null;
   }
 
   // 證交所 MIS 即時行情（加權指數、櫃買指數、台積電、0050）
@@ -366,8 +439,8 @@
       else if (it.c === '0050') key = '0050';
       if (!key) continue;
       const price = extractTwsePrice(it);
-      const prevClose = num(it.y);
-      if (!isNum(price) || !isNum(prevClose)) continue;
+      const prevClose = posNum(it.y);
+      if (!isNum(price) || price <= 0 || !isNum(prevClose) || prevClose <= 0) continue;
       const time = num(it.tlong) || Date.now();
       const rawVol = num(it.v);
       const volume = (key === '2330' || key === '0050') && isNum(rawVol) ? rawVol * 1000 : rawVol;
@@ -375,9 +448,9 @@
         key,
         price,
         prevClose,
-        open: num(it.o),
-        high: num(it.h),
-        low: num(it.l),
+        open: posNum(it.o),
+        high: posNum(it.h),
+        low: posNum(it.l),
         volume,
         time,
         source: '證交所 MIS（即時）',
@@ -394,9 +467,9 @@
     const ts = resp.timestamp || [];
     const cl = resp.indicators?.quote?.[0]?.close || [];
     const intraday = [];
-    for (let i = 0; i < ts.length; i++) if (cl[i] != null) intraday.push([ts[i] * 1000, cl[i]]);
+    for (let i = 0; i < ts.length; i++) if (cl[i] != null && cl[i] > 0) intraday.push([ts[i] * 1000, cl[i]]);
     const prevClose = isNum(m.previousClose) ? m.previousClose : m.chartPreviousClose;
-    if (!isNum(m.regularMarketPrice) || !isNum(prevClose)) return null;
+    if (!isNum(m.regularMarketPrice) || m.regularMarketPrice <= 0 || !isNum(prevClose) || prevClose <= 0) return null;
     const q = {
       key,
       price: m.regularMarketPrice,
@@ -406,8 +479,8 @@
       source: 'Yahoo Finance（即時）',
     };
     if (m.currentTradingPeriod?.regular) q.session = { start: m.currentTradingPeriod.regular.start * 1000, end: m.currentTradingPeriod.regular.end * 1000 };
-    if (isNum(m.regularMarketDayHigh)) q.high = m.regularMarketDayHigh;
-    if (isNum(m.regularMarketDayLow)) q.low = m.regularMarketDayLow;
+    if (isNum(m.regularMarketDayHigh) && m.regularMarketDayHigh > 0) q.high = m.regularMarketDayHigh;
+    if (isNum(m.regularMarketDayLow) && m.regularMarketDayLow > 0) q.low = m.regularMarketDayLow;
     if (isNum(m.regularMarketVolume)) q.volume = m.regularMarketVolume;
     return q;
   }
@@ -450,7 +523,7 @@
 
   // ---------------- 渲染：卡片 ----------------
   function sparkSVG(q, dir) {
-    const pts = (q.intraday || []).filter((p) => isNum(p[1]));
+    const pts = (q.intraday || []).filter((p) => isNum(p[1]) && (q.group === 'twchip' || p[1] > 0) && (q.key !== 'VIXTWN' || validVixTwn(p[1])));
     const W = 108, H = 48, pad = 3;
     if (pts.length < 2) return `<svg class="spark" viewBox="0 0 ${W} ${H}" aria-hidden="true"></svg>`;
     const vals = pts.map((p) => p[1]).concat(isNum(q.prevClose) ? [q.prevClose] : []);
@@ -738,32 +811,31 @@
   /** 日 K 對齊最新報價：依交易時區去重排序，最後一根若為同一交易日則以現價校正，否則補上今日 K 棒 */
   function alignedDaily(q, tz) {
     const byDate = new Map();
+    const isVixTwn = q.key === 'VIXTWN';
+    const okVal = (v) => (isVixTwn ? validVixTwn(v) : isNum(v));
     for (const r of q.daily || []) {
-      if (!Array.isArray(r) || r.length < 5 || !isNum(r[0]) || !isNum(r[4])) continue;
+      if (!Array.isArray(r) || r.length < 5 || !isNum(r[0]) || !okVal(r[4])) continue;
       const date = tzParts(r[0], tz).date;
-      byDate.set(date, {
-        date,
-        o: isNum(r[1]) ? r[1] : r[4],
-        h: isNum(r[2]) ? r[2] : r[4],
-        l: isNum(r[3]) ? r[3] : r[4],
-        c: r[4],
-      });
+      const o = okVal(r[1]) ? r[1] : r[4];
+      const h = okVal(r[2]) ? Math.max(r[2], o, r[4]) : Math.max(o, r[4]);
+      const l = okVal(r[3]) ? Math.min(r[3], o, r[4]) : Math.min(o, r[4]);
+      byDate.set(date, { date, o, h, l, c: r[4] });
     }
     const rows = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-    if (!rows.length || !isNum(q.price) || !q.time) return rows;
+    if (!rows.length || !okVal(q.price) || !q.time) return rows;
     const today = tzParts(q.time, tz).date;
     const last = rows[rows.length - 1];
     if (last.date === today) {
       last.c = q.price;
-      last.h = Math.max(last.h, q.price, isNum(q.high) ? q.high : -Infinity);
-      last.l = Math.min(last.l, q.price, isNum(q.low) ? q.low : Infinity);
+      last.h = Math.max(last.h, q.price, okVal(q.high) ? q.high : -Infinity);
+      last.l = Math.min(last.l, q.price, okVal(q.low) ? q.low : Infinity);
     } else if (today > last.date) {
-      const o = isNum(q.open) ? q.open : q.price;
+      const o = okVal(q.open) ? q.open : q.price;
       rows.push({
         date: today,
         o,
-        h: Math.max(o, q.price, isNum(q.high) ? q.high : -Infinity),
-        l: Math.min(o, q.price, isNum(q.low) ? q.low : Infinity),
+        h: Math.max(o, q.price, okVal(q.high) ? q.high : -Infinity),
+        l: Math.min(o, q.price, okVal(q.low) ? q.low : Infinity),
         c: q.price,
       });
     }
